@@ -57,14 +57,23 @@ so body-level stamping never reaches the pipe's outbound payload.
 
 ## Configuration
 
-`config.yaml` - no changes required to run the hook beyond registration (see
+`config.yaml` — no changes required to run the hook beyond registration (see
 [`config.yaml.example`](config.yaml.example) for a full reference with the required
-`model_info.metadata.route` entries; keys are referenced as `os.environ/...`, see
-[`.env.example`](.env.example)). The hook is registered under
-`litellm_settings.callbacks` (`time_router.proxy_handler_instance`); header
-normalization is built into LiteLLM.
+`model_info.metadata.route` entries). Keys are referenced as `os.environ/...`.
 
-Environment variables:
+The hook is registered under `litellm_settings.callbacks`
+(`time_router.proxy_handler_instance`); header normalization is built into LiteLLM.
+
+### Environment
+
+Required (see [`.env.example`](.env.example)):
+
+| Variable | Purpose |
+|---|---|
+| `LITELLM_MASTER_KEY` | Admin key. Required by the proxy; with a DB-less setup every client authenticates with it |
+| `DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY` | Provider keys referenced as `os.environ/...` in the config |
+
+Hook knobs (optional):
 
 | Variable | Default | Purpose |
 |---|---|---|
