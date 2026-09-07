@@ -1,3 +1,28 @@
+"""
+title: LiteLLM TimeRouter (Sticky Sessions)
+id: time_router
+author: A. Martin
+author_url: https://github.com/amartinr
+description: >
+    LiteLLM custom pre-call hook (CustomLogger) for the alias
+    `litellm/deepseek-v4-flash`. (1) Time-based routing: DeepSeek peak windows
+    01:00-04:00 and 06:00-10:00 UTC reroute to `openrouter/deepseek-v4-flash`,
+    otherwise to `deepseek/deepseek-v4-flash`. (2) Sticky sessions: pins each
+    conversation (keyed on `metadata.session_id`, fed by the Open WebUI pipe's
+    `x-litellm-session-id` header) to its provider while active, so long chats do
+    not flip providers mid-conversation and lose the prompt cache. One-way
+    ratchet while active (direct -> openrouter once at peak; openrouter stays
+    through off-peak); idle beyond the TTL re-evaluates by the clock.
+    (3) Labels requests with the config-declared route (`metadata.route` -> the
+    `metadata_route` Prometheus label). Register as
+    `time_router.proxy_handler_instance` under `litellm_settings.callbacks`.
+    Env knobs: TIME_ROUTER_DEBUG (verbose logs), TIME_ROUTER_FAKE_HOUR (test
+    window boundaries), TIME_ROUTER_SESSION_TTL (idle TTL, default 900 s).
+required_litellm_version: 1.99.0
+version: 4.0.0
+licence: MIT
+"""
+
 import os
 import time
 from datetime import datetime, timezone
