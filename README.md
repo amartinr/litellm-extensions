@@ -7,6 +7,18 @@ it as the `metadata_route` label.
 
 ## Status (2026-09-07)
 
+**FIX VALIDATED LIVE** — 2026-09-07 ~16:35 UTC:
+
+- Deployed `time_router.py` to `/app/time_router.py` + `docker restart litellm`.
+- One off-peak call to `litellm/deepseek-v4-flash` returned HTTP 200 and produced a new
+  series on `litellm_proxy_total_requests_metric_total`:
+  `requested_model="deepseek/deepseek-v4-flash" metadata_route="deepseek"`.
+- Remaining `metadata_route="None"` series predates the test call (direct call to the real
+  model, which bypasses the alias hook — expected).
+- Peak-window branch (01:00-04:00 / 06:00-10:00 UTC, route `baidu/fp8`) shares the same
+  injection code path; only the ROUTE_MAP value differs (both keys confirmed via
+  `/v1/model/info`). Not yet exercised live.
+
 Root cause of `metadata_route="None"` **confirmed against LiteLLM source (master ≈ 1.98/1.99)**:
 
 1. `common_processing_pre_call_logic` runs `add_litellm_data_to_request` **before** custom
