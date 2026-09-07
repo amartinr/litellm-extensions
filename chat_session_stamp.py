@@ -23,14 +23,20 @@ licence: MIT
 import logging
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 log = logging.getLogger(__name__)
 
 
 class Filter:
     class Valves(BaseModel):
-        pass
+        priority: int = Field(
+            default=0,
+            description=(
+                "Execution order. Lower values run first. Stamp early so other "
+                "filters can rely on metadata.session_id being set."
+            ),
+        )
 
     def __init__(self):
         self.valves = self.Valves()
