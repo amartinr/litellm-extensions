@@ -1,0 +1,98 @@
+# Reference LiteLLM config for time_router.
+#
+# Contract required by the hook:
+#   - every model that participates in routing carries model_info.metadata.route
+#     (the hook builds ROUTE_MAP from it and stamps it as the metadata_route label)
+#   - the alias entry in model_list is the only name clients know
+#   - keys are referenced as os.environ/... (see .env.example)
+#
+# The hook itself is imported as the module `time_router` (file next to this one)
+# and registered under litellm_settings.callbacks.
+
+model_list:
+  # Public alias — the only model clients should use. Default deployment points at
+  # a safe provider: if the hook is ever disabled, alias traffic still routes.
+  - model_name: litellm/deepseek-v4-flash
+    litellm_params:
+      model: deepseek/deepseek-v4-flash-0731
+      api_base: https://openrouter.ai/api/v1
+      api_key: os.environ/OPENROUTER_API_KEY
+      input_cost_per_token: 0.00000004998
+      output_cost_per_token: 0.00000009996
+      cache_read_input_token_cost: 0.000000009996
+    model_info:
+      metadata:
+        route: "baidu/fp8"
+
+  # Off-peak target (deepseek direct API).
+  - model_name: deepseek/deepseek-v4-flash
+    litellm_params:
+      model: deepseek/deepseek-v4-flash
+      api_key: os.environ/DEEPSEEK_API_KEY
+      api_base: https://api.deepseek.com/v1
+      input_cost_per_token: 0.00000022
+      output_cost_per_token: 0.00000066
+      cache_read_input_token_cost: 0.000000007
+      num_retries: 2
+      timeout: 10
+    model_info:
+      metadata:
+        route: "deepseek"
+
+  # Peak target (via OpenRouter -> Baidu Qianfan).
+  - model_name: openrouter/deepseek-v4-flash
+    litellm_params:
+      model: deepseek/deepseek-v4-flash-0731
+      api_base: https://openrouter.ai/api/v1
+      api_key: os.environ/OPENROUTER_API_KEY
+      input_cost_per_token: 0.00000004998
+      output_cost_per_token: 0.00000009996
+      cache_read_input_token_cost: 0.000000009996
+      extra_body:
+        provider:
+          order: ["baidu/fp8"]
+          allow_fallbacks: false
+    model_info:
+      metadata:
+        route: "baidu/fp8"
+
+  # Any extra models are fine; entries with a declared route get labeled.
+  - model_name: deepseek/deepseek-v4-pro
+    litellm_params:
+      model: deepseek/deepseek-v4-pro
+      api_key: os.environ/DEEPSEEK_API_KEY
+      api_base: https://api.deepseek.com/v1
+      input_cost_per_token: 0.00000066
+      output_cost_per_token: 0.00000198
+      cache_read_input_token_cost: 0.000000022
+    model_info:
+      metadata:
+        route: "deepseek"
+
+general_settings:
+  # User identity comes from a header, so different people sharing the master key
+  # still show up under their own name in logs/metrics.
+  user_header_mappings:
+    - header_name: x-litellm-user-name
+      litellm_user_role: internal_user
+  always_include_stream_usage: true
+  max_parallel_requests: 4
+  global_max_parallel_requests: 8
+  background_health_checks: false
+
+litellm_settings:
+  callbacks:
+    - 'prometheus'
+    - 'time_router.proxy_handler_instance'
+  custom_prometheus_metadata_labels:
+    - "metadata.tool"
+    - "metadata.client_host"
+    - "metadata.route"
+  json_logs: true
+  modify_params: true
+  request_timeout: 120
+
+router_settings:
+  # Example: degrade to the peak target if the off-peak one fails.
+  fallbacks:
+    - deepseek/deepseek-v4-flash: ["openrouter/deepseek-v4-flash"]

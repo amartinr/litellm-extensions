@@ -28,6 +28,7 @@ htmlcov/
 *.log
 .env
 .env.*
+!.env.example
 
 # --- IDE / OS ---
 .idea/

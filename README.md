@@ -57,7 +57,10 @@ so body-level stamping never reaches the pipe's outbound payload.
 
 ## Configuration
 
-`config.yaml` — no changes required. The hook is already registered under
+`config.yaml` — no changes required to run the hook beyond registration (see
+[`config.yaml.example`](config.yaml.example) for a full reference with the required
+`model_info.metadata.route` entries; keys are referenced as `os.environ/...`, see
+[`.env.example`](.env.example)). The hook is registered under
 `litellm_settings.callbacks` (`time_router.proxy_handler_instance`); header
 normalization is built into LiteLLM.
 
