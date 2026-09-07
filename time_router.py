@@ -19,7 +19,7 @@ description: >
     Env knobs: TIME_ROUTER_DEBUG (verbose logs), TIME_ROUTER_FAKE_HOUR (test
     window boundaries), TIME_ROUTER_SESSION_TTL (idle TTL, default 900 s).
 required_litellm_version: 1.99.0
-version: 0.4.0
+version: 0.4.1
 licence: MIT
 """
 
