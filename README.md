@@ -28,6 +28,13 @@ For the alias `litellm/deepseek-v4-flash`:
 
 Direct calls to any model listed in `ROUTE_MAP` are labeled (no rerouting).
 
+## Scope
+
+Time-based routing and session stickiness apply **only** to requests for the alias
+`litellm/deepseek-v4-flash`. Clients that call a deployment directly (e.g. the `pi`
+agent, which requests `deepseek/deepseek-v4-flash`) never cross providers and are
+only route-labeled.
+
 ## Session id source
 
 Stickiness keys on the request session id, resolved in this order:
