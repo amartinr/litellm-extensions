@@ -79,10 +79,10 @@ when an active session crosses a boundary and the pin overrides the clock.
 
 ## Deployment
 
-```bash
-sudo docker cp time_router.py litellm:/app/time_router.py
-sudo docker restart litellm
-```
+The hook is imported by LiteLLM as the module `time_router`, so it must live in the
+same directory as `config.yaml` (the proxy working directory). In Docker that is
+`/app` — mount the file there (e.g. `-v ./time_router.py:/app/time_router.py`) and
+restart the container after changes.
 
 ## Limitations
 
