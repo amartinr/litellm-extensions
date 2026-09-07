@@ -1,2 +1,38 @@
-vm_backup/
+# --- Byte-compiled / cache files ---
 __pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Distribution / packaging ---
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# --- Test / tooling caches ---
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+htmlcov/
+
+# --- Logs & secrets ---
+*.log
+.env
+.env.*
+
+# --- IDE / OS ---
+.idea/
+.vscode/
+.DS_Store
+
+# --- Project-specific: VictoriaMetrics exports (backup, not versioned) ---
+vm_backup/
