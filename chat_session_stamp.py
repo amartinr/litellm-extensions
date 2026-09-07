@@ -16,7 +16,7 @@ description: >
     Attach to the models you want stamped (Model Settings > Filters); keep it
     model-scoped, not global.
 required_open_webui_version: 0.9.0
-version: 1.0.1
+version: 1.0.2
 licence: MIT
 """
 
@@ -100,7 +100,11 @@ class Filter:
             meta_out = {}
             body["metadata"] = meta_out
         meta_out["session_id"] = str(sid)
-        log.info("chat_session_stamp: stamped session_id=%s", sid)
+        log.info(
+            "chat_session_stamp: stamped session_id=%s (model=%s)",
+            sid,
+            body.get("model") if isinstance(body, dict) else None,
+        )
         return body
 
     # ------------------------------------------------------------ hook points
