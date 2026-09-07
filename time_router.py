@@ -161,13 +161,19 @@ class TimeRouter(CustomLogger):
                 self._prune_sessions(now)
             data["model"] = route
             route_label = ROUTE_MAP.get(route, "unknown")
-            sticky = ""
-            if session_id and route != _desired_route(hour):
-                sticky = f" STICKY(session={session_id[:8]}…)"
+            # Always-on lightweight signal (rare): only when stickiness overrode
+            # the clock, i.e. an ACTIVE session crossed a window boundary.
+            clock_route = _desired_route(hour)
+            if session_id and route != clock_route:
+                print(
+                    f"[TimeRouter] STICKY session={session_id[:12]}… "
+                    f"kept/switch to {route} (clock says {clock_route})",
+                    flush=True,
+                )
             if os.environ.get("TIME_ROUTER_DEBUG"):
                 print(
                     f"[TimeRouter] requested={requested!r} target={route!r} route={route_label}"
-                    f" hour={hour} session={session_id!r}{sticky}",
+                    f" hour={hour} session={session_id!r}",
                     flush=True,
                 )
         elif requested in ROUTE_MAP:
