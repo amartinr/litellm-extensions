@@ -93,7 +93,7 @@ def _request_session_id(data: dict):
 
 
 def _log():
-    """LiteLLM's proxy logger — emits JSON lines when `json_logs` is on.
+    """LiteLLM's proxy logger - emits JSON lines when `json_logs` is on.
 
     Lazy import: the hook module is imported early by the proxy; importing
     proxy_server at module level would risk an import cycle.
@@ -115,7 +115,7 @@ class TimeRouter(CustomLogger):
 
         Custom labels come from the standard logging payload, which only keeps
         whitelisted metadata keys (StandardLoggingMetadata annotations) and copies
-        `requester_metadata` by reference — a deepcopy snapshot taken by
+        `requester_metadata` by reference - a deepcopy snapshot taken by
         add_litellm_data_to_request BEFORE pre-call hooks run. Top-level metadata
         keys are dropped, so the value must go into requester_metadata (and
         spend_logs_metadata, read by spend-log consumers).

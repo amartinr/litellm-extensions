@@ -10,7 +10,7 @@
 # and registered under litellm_settings.callbacks.
 
 model_list:
-  # Public alias — the only model clients should use. Default deployment points at
+  # Public alias - the only model clients should use. Default deployment points at
   # a safe provider: if the hook is ever disabled, alias traffic still routes.
   - model_name: litellm/deepseek-v4-flash
     litellm_params:

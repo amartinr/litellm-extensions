@@ -8,10 +8,10 @@ static `config.yaml`).
 
 For the alias `litellm/deepseek-v4-flash`:
 
-1. **Time-based routing** — DeepSeek peak windows (01:00–04:00 and 06:00–10:00 UTC)
+1. **Time-based routing** - DeepSeek peak windows (01:00-04:00 and 06:00-10:00 UTC)
    reroute to `openrouter/deepseek-v4-flash`; otherwise to
    `deepseek/deepseek-v4-flash`.
-2. **Session stickiness** — while a conversation is active, its provider pin is
+2. **Session stickiness** - while a conversation is active, its provider pin is
    preserved across window boundaries so the provider-side prompt cache is not
    invalidated mid-conversation:
    - Active session pinned to direct crossing into peak → switches to OpenRouter once.
@@ -20,7 +20,7 @@ For the alias `litellm/deepseek-v4-flash`:
    - Idle beyond `SESSION_IDLE_TTL_S` (default 900 s) → pin dropped, routing
      re-evaluates by the clock.
    - Requests without a session id fall back to stateless hour-based routing.
-3. **Route labeling** — every request is stamped with the config-declared route
+3. **Route labeling** - every request is stamped with the config-declared route
    (`model_info.metadata.route` from `config.yaml`, via `ROUTE_MAP`) so the Prometheus
    exporter surfaces it as the `metadata_route` label. Label propagation requires the
    value in `metadata.requester_metadata` / `metadata.spend_logs_metadata` (top-level
@@ -57,7 +57,7 @@ so body-level stamping never reaches the pipe's outbound payload.
 
 ## Configuration
 
-`config.yaml` — no changes required to run the hook beyond registration (see
+`config.yaml` - no changes required to run the hook beyond registration (see
 [`config.yaml.example`](config.yaml.example) for a full reference with the required
 `model_info.metadata.route` entries; keys are referenced as `os.environ/...`, see
 [`.env.example`](.env.example)). The hook is registered under
@@ -82,7 +82,7 @@ when an active session crosses a boundary and the pin overrides the clock.
 
 The hook is imported by LiteLLM as the module `time_router`, so it must live in the
 same directory as `config.yaml` (the proxy working directory). In Docker that is
-`/app` — mount the file there (e.g. `-v ./time_router.py:/app/time_router.py`) and
+`/app` - mount the file there (e.g. `-v ./time_router.py:/app/time_router.py`) and
 restart the container after changes.
 
 ## Limitations
