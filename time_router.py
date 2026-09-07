@@ -79,6 +79,31 @@ class TimeRouter(CustomLogger):
                     f"[TimeRouter] metadata after inject={_json.dumps(metadata, default=str)}",
                     flush=True,
                 )
+                # --- sticky-session exploration: what session ids does the hook see? ---
+                print(f"[TimeRouter] data keys={sorted(data.keys())}", flush=True)
+                _md = data.get("metadata")
+                if isinstance(_md, dict):
+                    print(f"[TimeRouter] metadata keys={sorted(_md.keys())}", flush=True)
+                    for _k in (
+                        "session_id",
+                        "chat_id",
+                        "litellm_session_id",
+                        "litellm_trace_id",
+                        "user_id",
+                    ):
+                        if _k in _md:
+                            _v = str(_md[_k])
+                            print(
+                                f"[TimeRouter] metadata[{_k}]={_v[:80]}{'…' if len(_v) > 80 else ''}",
+                                flush=True,
+                            )
+                for _k in ("session_id", "chat_id", "litellm_session_id", "litellm_trace_id", "user"):
+                    if _k in data:
+                        _v = str(data[_k])
+                        print(
+                            f"[TimeRouter] data[{_k}]={_v[:80]}{'…' if len(_v) > 80 else ''}",
+                            flush=True,
+                        )
         return data
 
 proxy_handler_instance = TimeRouter()
