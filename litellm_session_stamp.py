@@ -69,14 +69,24 @@ class Filter:
         meta: Optional[dict],
         chat_id: Optional[str],
     ) -> dict:
-        """Write metadata.session_id once the chat id is known. Idempotent."""
+        """Write metadata.session_id once the chat id is known.
+
+        Overwrite is intentional: the Open WebUI chat id is the authoritative
+        session key for LiteLLM stickiness, and no upstream caller sets it
+        (Open WebUI sends no session id natively). Convergent across repeated
+        runs — it never accumulates, it just re-asserts the same value.
+        """
         sid = self._find_chat_id(body, meta, chat_id)
-        if sid:
-            body.setdefault("metadata", {})["session_id"] = str(sid)
-        else:
+        if not sid:
             # Rare: title generation and other out-of-chat calls have no chat id.
             # LiteLLM falls back to stateless hour-based routing for these.
             log.info("litellm_session_stamp: no chat/session id found on request")
+            return body
+        meta_out = body.get("metadata")
+        if not isinstance(meta_out, dict):
+            meta_out = {}
+            body["metadata"] = meta_out
+        meta_out["session_id"] = str(sid)
         return body
 
     # ------------------------------------------------------------ hook points
