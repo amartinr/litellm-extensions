@@ -6,8 +6,9 @@ author_url: https://github.com/amartinr
 description: >
     LiteLLM custom pre-call hook (CustomLogger) for the alias
     `litellm/deepseek-v4-flash`. (1) Time-based routing: DeepSeek peak windows
-    01:00-04:00 and 06:00-10:00 UTC reroute to `openrouter/deepseek-v4-flash`,
-    otherwise to `deepseek/deepseek-v4-flash`. (2) Sticky sessions: pins each
+    Mon-Fri 01:00-04:00 and 06:00-10:00 UTC (weekends are always off-peak)
+    reroute to `openrouter/deepseek-v4-flash`, otherwise to
+    `deepseek/deepseek-v4-flash`. (2) Sticky sessions: pins each
     conversation (keyed on `metadata.session_id`, fed by the Open WebUI pipe's
     `x-litellm-session-id` header) to its provider while active, so long chats do
     not flip providers mid-conversation and lose the prompt cache. One-way
@@ -17,9 +18,10 @@ description: >
     `metadata_route` Prometheus label). Register as
     `time_router.proxy_handler_instance` under `litellm_settings.callbacks`.
     Env knobs: TIME_ROUTER_DEBUG (verbose logs), TIME_ROUTER_FAKE_HOUR (test
-    window boundaries), TIME_ROUTER_SESSION_TTL (idle TTL, default 900 s).
+    window boundaries), TIME_ROUTER_FAKE_WEEKDAY (0=Mon..6=Sun, test weekends),
+    TIME_ROUTER_SESSION_TTL (idle TTL, default 900 s).
 required_litellm_version: 1.99.0
-version: 0.4.1
+version: 0.4.2
 licence: MIT
 """
 
@@ -76,13 +78,27 @@ def _utc_hour() -> int:
     return datetime.now(timezone.utc).hour
 
 
-def _is_peak(hour: int) -> bool:
-    # DeepSeek peak windows: 01:00-04:00 and 06:00-10:00 UTC
+def _utc_weekday() -> int:
+    # 0=Mon .. 6=Sun. TIME_ROUTER_FAKE_WEEKDAY lets tests exercise weekends.
+    fake = os.environ.get("TIME_ROUTER_FAKE_WEEKDAY")
+    if fake:
+        try:
+            return int(fake) % 7
+        except ValueError:
+            pass
+    return datetime.now(timezone.utc).weekday()
+
+
+def _is_peak(hour: int, weekday: int) -> bool:
+    # DeepSeek peak windows: Mon-Fri 01:00-04:00 and 06:00-10:00 UTC.
+    # Weekends have no peak pricing, so they are always off-peak.
+    if weekday >= 5:  # Sat/Sun
+        return False
     return (1 <= hour < 4) or (6 <= hour < 10)
 
 
-def _desired_route(hour: int) -> str:
-    return PEAK_TARGET if _is_peak(hour) else OFFPEAK_TARGET
+def _desired_route(hour: int, weekday: int) -> str:
+    return PEAK_TARGET if _is_peak(hour, weekday) else OFFPEAK_TARGET
 
 
 def _request_session_id(data: dict):
@@ -127,7 +143,7 @@ class TimeRouter(CustomLogger):
         return metadata
 
     # ------------------------------------------------------------------ policy
-    def _pick_route(self, session_id, hour: int) -> str:
+    def _pick_route(self, session_id, hour: int, weekday: int) -> str:
         """Sticky-session route decision for alias traffic.
 
         - No session id            -> stateless hour routing (title gen etc.)
@@ -140,7 +156,7 @@ class TimeRouter(CustomLogger):
                                       cache; skipping credit burn is the lesser
                                       evil). One-way ratchet while active.
         """
-        desired = _desired_route(hour)
+        desired = _desired_route(hour, weekday)
         if not session_id:
             return desired
         state = _session_state.get(session_id)
@@ -169,8 +185,9 @@ class TimeRouter(CustomLogger):
 
         if requested == ALIAS_MODEL:
             hour = _utc_hour()
+            weekday = _utc_weekday()
             session_id = _request_session_id(data)
-            route = self._pick_route(session_id, hour)
+            route = self._pick_route(session_id, hour, weekday)
             now = time.time()
             if session_id:
                 _session_state[session_id] = {"route": route, "last_seen": now}
@@ -179,7 +196,7 @@ class TimeRouter(CustomLogger):
             route_label = ROUTE_MAP.get(route, "unknown")
             # Always-on lightweight signal (rare): only when stickiness overrode
             # the clock, i.e. an ACTIVE session crossed a window boundary.
-            clock_route = _desired_route(hour)
+            clock_route = _desired_route(hour, weekday)
             if session_id and route != clock_route:
                 _log().info(
                     "TimeRouter: STICKY session=%s… kept/switch to %s (clock says %s)",
@@ -189,11 +206,12 @@ class TimeRouter(CustomLogger):
                 )
             if os.environ.get("TIME_ROUTER_DEBUG"):
                 _log().info(
-                    "TimeRouter: requested=%r target=%r route=%s hour=%s session=%r",
+                    "TimeRouter: requested=%r target=%r route=%s hour=%s weekday=%s session=%r",
                     requested,
                     route,
                     route_label,
                     hour,
+                    weekday,
                     session_id,
                 )
         elif requested in ROUTE_MAP:

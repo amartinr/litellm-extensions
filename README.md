@@ -8,7 +8,8 @@ static `config.yaml`).
 
 For the alias `litellm/deepseek-v4-flash`:
 
-1. **Time-based routing** - DeepSeek peak windows (01:00-04:00 and 06:00-10:00 UTC)
+1. **Time-based routing** - DeepSeek peak windows (Mon-Fri 01:00-04:00 and
+   06:00-10:00 UTC; weekends have no peak pricing and are always off-peak)
    reroute to `openrouter/deepseek-v4-flash`; otherwise to
    `deepseek/deepseek-v4-flash`.
 2. **Session stickiness** - while a conversation is active, its provider pin is
@@ -80,6 +81,7 @@ Hook knobs (optional):
 | `TIME_ROUTER_SESSION_TTL` | `900` | Idle TTL in seconds before a session pin expires |
 | `TIME_ROUTER_DEBUG` | unset | Verbose per-request logging |
 | `TIME_ROUTER_FAKE_HOUR` | unset | Override UTC hour (testing window boundaries) |
+| `TIME_ROUTER_FAKE_WEEKDAY` | unset | Override weekday, 0=Mon..6=Sun (testing weekends) |
 
 ## Logging
 
