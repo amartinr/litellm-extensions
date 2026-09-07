@@ -92,6 +92,22 @@ def _request_session_id(data: dict):
     return data.get("litellm_session_id")
 
 
+def _log():
+    """LiteLLM's proxy logger — emits JSON lines when `json_logs` is on.
+
+    Lazy import: the hook module is imported early by the proxy; importing
+    proxy_server at module level would risk an import cycle.
+    """
+    try:
+        from litellm.proxy.proxy_server import verbose_proxy_logger
+
+        return verbose_proxy_logger
+    except Exception:
+        from litellm import verbose_logger
+
+        return verbose_logger
+
+
 class TimeRouter(CustomLogger):
     @staticmethod
     def _inject_route(data: dict, route: str) -> dict:
@@ -165,50 +181,63 @@ class TimeRouter(CustomLogger):
             # the clock, i.e. an ACTIVE session crossed a window boundary.
             clock_route = _desired_route(hour)
             if session_id and route != clock_route:
-                print(
-                    f"[TimeRouter] STICKY session={session_id[:12]}… "
-                    f"kept/switch to {route} (clock says {clock_route})",
-                    flush=True,
+                _log().info(
+                    "TimeRouter: STICKY session=%s… kept/switch to %s (clock says %s)",
+                    session_id[:12],
+                    route,
+                    clock_route,
                 )
             if os.environ.get("TIME_ROUTER_DEBUG"):
-                print(
-                    f"[TimeRouter] requested={requested!r} target={route!r} route={route_label}"
-                    f" hour={hour} session={session_id!r}",
-                    flush=True,
+                _log().info(
+                    "TimeRouter: requested=%r target=%r route=%s hour=%s session=%r",
+                    requested,
+                    route,
+                    route_label,
+                    hour,
+                    session_id,
                 )
         elif requested in ROUTE_MAP:
             # Direct call to a model that declares a route in config.yaml:
             # label it with the declared route, no rerouting.
             route_label = ROUTE_MAP[requested]
             if os.environ.get("TIME_ROUTER_DEBUG"):
-                print(f"[TimeRouter] requested={requested!r} target=None route={route_label}", flush=True)
+                _log().info(
+                    "TimeRouter: requested=%r target=None route=%s",
+                    requested,
+                    route_label,
+                )
 
         if route_label is not None:
             metadata = self._inject_route(data, route_label)
             if os.environ.get("TIME_ROUTER_DEBUG"):
                 import json as _json
-                print(f"[TimeRouter] ROUTE_MAP={_json.dumps(ROUTE_MAP)}", flush=True)
-                print(
-                    f"[TimeRouter] metadata after inject={_json.dumps(metadata, default=str)}",
-                    flush=True,
+
+                _log().info("TimeRouter: ROUTE_MAP=%s", _json.dumps(ROUTE_MAP))
+                _log().info(
+                    "TimeRouter: metadata after inject=%s",
+                    _json.dumps(metadata, default=str),
                 )
-                print(f"[TimeRouter] data keys={sorted(data.keys())}", flush=True)
+                _log().info("TimeRouter: data keys=%s", sorted(data.keys()))
                 _md = data.get("metadata")
                 if isinstance(_md, dict):
-                    print(f"[TimeRouter] metadata keys={sorted(_md.keys())}", flush=True)
+                    _log().info("TimeRouter: metadata keys=%s", sorted(_md.keys()))
                     for _k in ("session_id", "chat_id", "litellm_session_id", "litellm_trace_id", "user_id"):
                         if _k in _md:
                             _v = str(_md[_k])
-                            print(
-                                f"[TimeRouter] metadata[{_k}]={_v[:80]}{'…' if len(_v) > 80 else ''}",
-                                flush=True,
+                            _log().info(
+                                "TimeRouter: metadata[%s]=%s%s",
+                                _k,
+                                _v[:80],
+                                "…" if len(_v) > 80 else "",
                             )
                 for _k in ("session_id", "chat_id", "litellm_session_id", "litellm_trace_id", "user"):
                     if _k in data:
                         _v = str(data[_k])
-                        print(
-                            f"[TimeRouter] data[{_k}]={_v[:80]}{'…' if len(_v) > 80 else ''}",
-                            flush=True,
+                        _log().info(
+                            "TimeRouter: data[%s]=%s%s",
+                            _k,
+                            _v[:80],
+                            "…" if len(_v) > 80 else "",
                         )
         return data
 
