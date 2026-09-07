@@ -7,7 +7,7 @@ it as the `metadata_route` label.
 
 ## Status (2026-09-07)
 
-**v2 (direct traffic labeling) VALIDATED LIVE** — 2026-09-07 ~17:1x UTC:
+**v2 (direct traffic labeling) VALIDATED LIVE** — 2026-09-07 ~16:45 UTC:
 
 - Hook v2 deployed: labels any request whose model declares `route` in config.yaml
   (`ROUTE_MAP` membership), no rerouting; alias logic unchanged.
