@@ -72,7 +72,6 @@ Required (see [`.env.example`](.env.example)):
 |---|---|
 | `LITELLM_MASTER_KEY` | Admin key. Required by the proxy; with a DB-less setup every client authenticates with it |
 | `DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY` | Provider keys used by `config.yaml.example` (`os.environ/...` references) |
-| `ANTHROPIC_API_KEY` | Only if you add Anthropic models to the config (not in the example) |
 
 Hook knobs (optional):
 
