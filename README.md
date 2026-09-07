@@ -7,7 +7,19 @@ it as the `metadata_route` label.
 
 ## Status (2026-09-07)
 
-**FIX VALIDATED LIVE** — 2026-09-07 ~16:35 UTC:
+**v2 (direct traffic labeling) VALIDATED LIVE** — 2026-09-07 ~17:1x UTC:
+
+- Hook v2 deployed: labels any request whose model declares `route` in config.yaml
+  (`ROUTE_MAP` membership), no rerouting; alias logic unchanged.
+- Direct call to `deepseek/deepseek-v4-flash` → `metadata_route="deepseek"`.
+- Direct call to `openrouter/deepseek-v4-flash` → `metadata_route="baidu/fp8"`
+  (upstream confirmed `provider: Baidu` in the response).
+- Agent traffic (`tool=pi`, direct model calls) now carries `metadata_route="deepseek"`.
+- Note: metric label `api_provider` on the openrouter group shows the deployment's
+  declared provider (`deepseek`), not the real upstream (Baidu via OpenRouter) —
+  `metadata_route` is the reliable discriminator.
+
+**v1 (alias reroute label) VALIDATED LIVE** — earlier same day:
 
 - Deployed `time_router.py` to `/app/time_router.py` + `docker restart litellm`.
 - One off-peak call to `litellm/deepseek-v4-flash` returned HTTP 200 and produced a new
@@ -42,6 +54,7 @@ Root cause of `metadata_route="None"` **confirmed against LiteLLM source (master
 
 ## Open items
 
-- Operator must deploy + `docker restart litellm`, then validate the label after an off-peak call.
 - LiteLLM issue #38660: failure/fallback metric emitters do not populate custom labels at all
   (they export literal `"None"`), including the `router_settings.fallbacks` path.
+- Peak-window branch of the alias (01:00-04:00 / 06:00-10:00 UTC, route `baidu/fp8`) shares
+  the same injection code path; not yet exercised live.
