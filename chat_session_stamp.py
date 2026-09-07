@@ -1,18 +1,19 @@
 """
-title: LiteLLM Session Stamp
-id: litellm_session_stamp
+title: Chat Session Stamp
+id: chat_session_stamp
 author: A. Martin
 author_url: https://github.com/amartinr
 git_url: https://github.com/amartinr/open-webui-extensions.git
 description: >
-    Stamps the Open WebUI chat id as `metadata.session_id` on every request
-    sent to LiteLLM, so the LiteLLM time_router hook can key per-conversation
-    state (sticky sessions). Open WebUI does not send a per-chat session id
-    natively; this filter injects it into the request body, which the LiteLLM
-    pipe forwards unchanged (`{**body, ...}`). Chat id is read from
-    `__chat_id__` first, then `__metadata__`, then the body. Idempotent and
-    safe to run on every outgoing call. Attach to the model(s) that use the
-    `litellm/deepseek-v4-flash` alias (Model Settings > Filters); keep it
+    Gateway-agnostic: stamps the Open WebUI chat id as `metadata.session_id`
+    on every outgoing model request, so any downstream gateway, proxy or hook
+    that keys per-conversation state can consume it. Open WebUI does not send
+    a per-chat session id natively; this filter injects it into the request
+    body, which the pipe forwards unchanged (`{**body, ...}`). Chat id is read
+    from `__chat_id__` first, then `__metadata__`, then the body. Idempotent
+    and safe to run on every outgoing call. Example consumer: a LiteLLM
+    pre-call hook doing sticky session routing on `data["metadata"]["session_id"]`.
+    Attach to the models you want stamped (Model Settings > Filters); keep it
     model-scoped, not global.
 required_open_webui_version: 0.9.0
 version: 1.0.0
@@ -72,15 +73,14 @@ class Filter:
         """Write metadata.session_id once the chat id is known.
 
         Overwrite is intentional: the Open WebUI chat id is the authoritative
-        session key for LiteLLM stickiness, and no upstream caller sets it
-        (Open WebUI sends no session id natively). Convergent across repeated
-        runs — it never accumulates, it just re-asserts the same value.
+        conversation key, and no upstream caller sets it (Open WebUI sends no
+        session id natively). Convergent across repeated runs — it never
+        accumulates, it just re-asserts the same value.
         """
         sid = self._find_chat_id(body, meta, chat_id)
         if not sid:
             # Rare: title generation and other out-of-chat calls have no chat id.
-            # LiteLLM falls back to stateless hour-based routing for these.
-            log.info("litellm_session_stamp: no chat/session id found on request")
+            log.info("chat_session_stamp: no chat/session id found on request")
             return body
         meta_out = body.get("metadata")
         if not isinstance(meta_out, dict):
