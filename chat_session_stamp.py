@@ -16,7 +16,7 @@ description: >
     Attach to the models you want stamped (Model Settings > Filters); keep it
     model-scoped, not global.
 required_open_webui_version: 0.9.0
-version: 1.0.0
+version: 1.0.1
 licence: MIT
 """
 
@@ -85,14 +85,22 @@ class Filter:
         """
         sid = self._find_chat_id(body, meta, chat_id)
         if not sid:
-            # Rare: title generation and other out-of-chat calls have no chat id.
-            log.info("chat_session_stamp: no chat/session id found on request")
+            # Distinguishes "filter ran but found no id" (logged here) from
+            # "filter did not run" (nothing logged at all).
+            log.info(
+                "chat_session_stamp: no chat/session id found "
+                "(body keys=%s, meta keys=%s, __chat_id__=%r)",
+                sorted(body) if isinstance(body, dict) else body,
+                sorted(meta) if isinstance(meta, dict) else meta,
+                chat_id,
+            )
             return body
         meta_out = body.get("metadata")
         if not isinstance(meta_out, dict):
             meta_out = {}
             body["metadata"] = meta_out
         meta_out["session_id"] = str(sid)
+        log.info("chat_session_stamp: stamped session_id=%s", sid)
         return body
 
     # ------------------------------------------------------------ hook points
