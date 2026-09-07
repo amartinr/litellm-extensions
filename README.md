@@ -42,10 +42,8 @@ Stickiness keys on the request session id, resolved in this order:
 
 LiteLLM populates both from the `x-litellm-session-id` request header (during
 `add_litellm_data_to_request`, before pre-call hooks run). Therefore the client must
-send that header.
-
-In the current deployment, the Open WebUI pipe (`agent_loop_guard`) sends it via its
-`GATEWAY_CUSTOM_HEADERS` valve:
+send that header. For example, an Open WebUI pipe can be configured to send it via a
+custom-headers valve templated with the chat id:
 
 ```json
 {
@@ -53,7 +51,7 @@ In the current deployment, the Open WebUI pipe (`agent_loop_guard`) sends it via
 }
 ```
 
-The `{{CHAT_ID}}` template resolves from the pipe's `__metadata__`. Note that Open
+The template resolves from the pipe's metadata. Note that Open
 WebUI function filters cannot be used for this: pipe models bypass the filter pipeline,
 so body-level stamping never reaches the pipe's outbound payload.
 
