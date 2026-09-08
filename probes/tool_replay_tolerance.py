@@ -1,27 +1,41 @@
 #!/usr/bin/env python3
 """Probe 2 — tool-call continuation replay trio, OR->Baidu vs native.
 
-WHY
----
+WHY (design)
+------------
 The DeepSeek API contract requires `reasoning_content` on EVERY assistant
 message once a history contains tool calls (missing field = HTTP 400 on the
-raw API; LiteLLM's transformation injects a " " placeholder + warning on the
-native route). The clients in front of this gateway either replay the real
-reasoning text, replay a " " placeholder, or (Open WebUI rebuild) replay
-nothing. All previous A/B evidence was collected on the NATIVE
-(deepseek/deepseek-v4-flash) route only. This probe runs the same trio
-against the OpenRouter->Baidu route: is the field required there too? Is a
-missing field tolerated? Does a " " placeholder still allow reasoning?
+raw API; LiteLLM injects a " " placeholder + warning on the native route).
+The clients in front of this gateway replay the REAL reasoning text, a " "
+placeholder, or (Open WebUI rebuild) NOTHING. Does the OpenRouter->Baidu
+route require the field too? Does replaying real text vs placeholder vs
+nothing change continuation reasoning?
+
+PROBE DESIGN (v2): the continuation MUST have something to reason about.
+v1 asked the model to just relay a single tool result — nothing to reason
+about, so every leg produced 0 reasoning tokens at effort low and the probe
+could not discriminate (the model DOES reason at low whenever the task
+requires it: single-turn probes and the tool-calling turn itself produce
+reasoning tokens). This version mirrors the proven native-route A/B
+(open-webui-extensions probes/litellm/03_replay_ab.py): a TWO-STEP tool task
+where the continuation must compute "tomorrow" from the get_date result and
+call get_weather:
+
+    user: "What will the weather be in Madrid tomorrow? Use the tools."
+    turn 1: model reasons + calls get_date
+    continuation (leg A/B/C differ ONLY in the replayed assistant's
+    reasoning_content): model reasons again, computes tomorrow, calls
+    get_weather, answers.
 
 RULES (user constraints)
 ------------------------
 - API key NEVER hardcoded: read LITELLM_KEY or LITELLM_MASTER_KEY.
-- Reasoning exercised at effort "low" (credit budget; LITELLM_EFFORT override
-  only for comparison runs).
-- One provider per run: every pair of calls in a round uses the SAME model.
-  Default = openrouter/deepseek-v4-flash (OR -> Baidu fp8). Native comparison:
+- Reasoning exercised at effort "low" only (credit budget); LITELLM_EFFORT
+  override only for a deliberate comparison run.
+- One provider per run: every call in a round uses the SAME model. Default =
+  openrouter/deepseek-v4-flash (OR -> Baidu fp8). Native comparison:
   LITELLM_MODEL=deepseek/deepseek-v4-flash. NO cross-provider histories.
-- rounds default 2 (each round = 1 tool-call request + 3 continuation
+- rounds default 2 (each clean round = 1 tool-call request + 3 continuation
   requests = 4 requests); pass a number as argv[1] to change.
 
 USAGE
@@ -51,18 +65,29 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "get_date",
+            "description": "Get the current date (ISO).",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_weather",
-            "description": "Get current weather for a city",
+            "description": "Get the weather for a city on a date.",
             "parameters": {
                 "type": "object",
-                "properties": {"city": {"type": "string"}},
-                "required": ["city"],
+                "properties": {
+                    "city": {"type": "string"},
+                    "date": {"type": "string", "description": "ISO date"},
+                },
+                "required": ["city", "date"],
             },
         },
-    }
+    },
 ]
 
-USER_MSG = "What is the weather in Madrid? Use the tool."
+USER_MSG = "What will the weather be in Madrid tomorrow? Use the tools."
 
 
 def _api_key() -> str:
@@ -79,16 +104,14 @@ def _api_key() -> str:
 KEY = _api_key()
 
 
-def chat(messages):
-    """POST one non-stream chat completion with tools + effort low."""
-    body = {
-        "model": MODEL,
-        "messages": messages,
-        "tools": TOOLS,
-        "reasoning_effort": EFFORT,
-        "max_tokens": MAX_TOKENS,
-        "stream": False,
-    }
+def _is_retryable(status: int) -> bool:
+    """429 (rate limit) and 5xx are transient — retry with backoff.
+    4xx format rejections (400/422/426) are the tolerance signal and never
+    retried."""
+    return status == 429 or status >= 500
+
+
+def _post(body: dict):
     req = urllib.request.Request(
         f"{BASE}/v1/chat/completions",
         data=json.dumps(body).encode(),
@@ -107,7 +130,30 @@ def chat(messages):
         return exc.code, snippet, time.time() - t0
 
 
-def message_reasoning(msg: dict) -> int:
+def chat(messages):
+    """POST one non-stream chat completion with tools + effort low.
+    Retries 429/5xx twice with backoff (rate limits are the provider's
+    business, not the probe's verdict). Returns (status, body, ms, retries)."""
+    body = {
+        "model": MODEL,
+        "messages": messages,
+        "tools": TOOLS,
+        "reasoning_effort": EFFORT,
+        "max_tokens": MAX_TOKENS,
+        "stream": False,
+    }
+    retries = 0
+    for attempt in range(3):
+        status, payload, ms = _post(body)
+        if _is_retryable(status) and attempt < 2:
+            retries += 1
+            time.sleep(3 * (attempt + 1))
+            continue
+        return status, payload, ms, retries
+    return status, payload, ms, retries
+
+
+def reasoning_len(msg: dict) -> int:
     """Length of the reasoning the MODEL produced (any normalized field)."""
     rc = msg.get("reasoning_content")
     if isinstance(rc, str) and rc:
@@ -122,55 +168,61 @@ def message_reasoning(msg: dict) -> int:
     return 0
 
 
-def one_round():
-    """Turn 1 (real tool call) then three single-provider continuation legs.
+def reasoning_tokens(data: dict) -> int:
+    det = ((data.get("usage") or {}).get("completion_tokens_details")) or {}
+    return int(det.get("reasoning_tokens") or 0)
 
-    All four calls in this round use the SAME model — never a mix of
-    providers inside a round or across rounds of a run.
+
+def one_round():
+    """Turn 1 (get_date) then three single-provider continuation legs.
+
+    All calls in this round use the SAME model — never a mix of providers.
+    If turn 1 already called get_weather (parallel tool calling), there is
+    nothing left for the continuation to reason about: the round is marked
+    degraded and skipped (no continuation calls are made — saves credit).
     """
-    # Turn 1: model reasons and calls the tool (produces the real assistant).
-    status, data, ms = chat([{"role": "user", "content": USER_MSG}])
+    status, data, ms, retries = chat([{"role": "user", "content": USER_MSG}])
     if status != 200:
         raise RuntimeError(f"turn1 HTTP {status}: {str(data)[:300]}")
     msg = (data.get("choices") or [{}])[0].get("message") or {}
     tool_calls = msg.get("tool_calls") or []
     if not tool_calls:
-        raise RuntimeError("model did not call the tool in turn 1")
+        raise RuntimeError("model did not call a tool in turn 1")
+    names = [tc["function"]["name"] for tc in tool_calls]
+    if "get_weather" in names:
+        return {"degraded": True, "names": names}
     tc = tool_calls[0]
-    real_rc = msg.get("reasoning_content") or ""
+    real_rc = msg.get("reasoning_content")
     if not isinstance(real_rc, str):
         real_rc = ""
 
-    # Base continuation history: user, assistant(tool_call), tool result.
-    assistant = {
-        "role": "assistant",
-        "content": msg.get("content") or "",
-        "tool_calls": [
-            {
-                "id": tc["id"],
-                "type": "function",
-                "function": {
-                    "name": tc["function"]["name"],
-                    "arguments": tc["function"]["arguments"],
-                },
-            }
-        ],
-    }
+    # Continuation history: user, assistant(get_date call), tool result.
+    # The base assistant has NO reasoning_content field = leg B (missing).
     history = [
         {"role": "user", "content": USER_MSG},
-        assistant,
+        {
+            "role": "assistant",
+            "content": msg.get("content") or "",
+            "tool_calls": [
+                {
+                    "id": tc["id"],
+                    "type": "function",
+                    "function": {
+                        "name": tc["function"]["name"],
+                        "arguments": tc["function"]["arguments"],
+                    },
+                }
+            ],
+        },
         {
             "role": "tool",
             "tool_call_id": tc["id"],
-            "content": '{"temp": 28, "city": "Madrid", "sky": "sunny"}',
+            "content": '{"date": "2026-09-08"}',
         },
     ]
 
-    # The base assistant (as built above) has NO reasoning_content field —
-    # that is exactly leg B (how Open WebUI rebuilds assistant messages), so
-    # B_missing needs no mutation. Leg A replays the REAL reasoning text;
-    # leg C forces the " " placeholder (what the pipe / pi extension send
-    # when no real text is available).
+    # Leg A: replay the REAL reasoning text; B: leave missing (Open WebUI
+    # rebuild); C: force the " " placeholder (pipe / pi extension fallback).
     legs = {
         "A_real": json.loads(json.dumps(history)),
         "B_missing": json.loads(json.dumps(history)),
@@ -179,17 +231,23 @@ def one_round():
     legs["A_real"][1]["reasoning_content"] = real_rc or " "
     legs["C_space"][1]["reasoning_content"] = " "
 
-    out = {}
+    out = {"degraded": False, "names": names}
     for tag, messages in legs.items():
-        status, data, dt = chat(messages)
+        status, data, dt, retries = chat(messages)
         if status != 200:
-            out[tag] = {"status": status, "rc_len": -1, "error": str(data)[:200]}
+            out[tag] = {"status": status, "rc_len": -1, "retries": retries,
+                        "error": str(data)[:200]}
             continue
         cont = (data.get("choices") or [{}])[0].get("message") or {}
+        next_tools = [
+            t["function"]["name"] for t in (cont.get("tool_calls") or [])
+        ]
         out[tag] = {
             "status": status,
-            "rc_len": message_reasoning(cont),
-            "error": "",
+            "rc_len": reasoning_len(cont),
+            "rtoks": reasoning_tokens(data),
+            "next_tools": next_tools,
+            "retries": retries,
             "ms": dt,
         }
     return out
@@ -198,46 +256,71 @@ def one_round():
 def main():
     rounds = int(sys.argv[1]) if len(sys.argv) > 1 else 2
     print(f"target model : {MODEL}  (effort: {EFFORT}, rounds: {rounds})")
-    print(f"single provider per round: yes — no cross-provider histories")
-    agg = {tag: {"ok": 0, "reasoned": 0, "err": 0, "rc_tot": 0} for tag in ("A_real", "B_missing", "C_space")}
+    print("task: 2-step tool chain (get_date -> continuation -> get_weather)")
+    print("single provider per round: yes — no cross-provider histories")
+    agg = {
+        tag: {"ok": 0, "reasoned": 0, "rc_tot": 0, "rtoks_tot": 0,
+              "weather_calls": 0, "format_err": 0, "transient": 0}
+        for tag in ("A_real", "B_missing", "C_space")
+    }
+    valid = 0
     for r in range(1, rounds + 1):
         try:
             res = one_round()
         except Exception as exc:  # turn-1 failure aborts the round cleanly
             print(f"round {r}: SKIPPED ({exc})")
             continue
-        for tag, r_ in res.items():
-            if r_["status"] != 200:
-                agg[tag]["err"] += 1
-                print(f"round {r} {tag}: HTTP {r_['status']} — {r_['error']}")
-            else:
-                agg[tag]["ok"] += 1
-                reasoned = r_["rc_len"] > 0
-                if reasoned:
-                    agg[tag]["reasoned"] += 1
-                agg[tag]["rc_tot"] += r_["rc_len"]
-                print(
-                    f"round {r} {tag}: 200 reasoned={reasoned} rc_len={r_['rc_len']} "
-                    f"({r_['ms'] * 1000:.0f}ms)"
-                )
-    print("\n=== verdict (per leg) ===")
+        if res["degraded"]:
+            print(f"round {r}: DEGRADED (turn 1 called {res['names']} in "
+                  f"parallel; nothing left to reason about) — skipped")
+            continue
+        valid += 1
+        for tag in ("A_real", "B_missing", "C_space"):
+            rr = res[tag]
+            if rr["status"] != 200:
+                if _is_retryable(rr["status"]):
+                    agg[tag]["transient"] += 1
+                    print(f"round {r} {tag}: transient HTTP {rr['status']} "
+                          f"after {rr['retries']} retries — {rr['error']}")
+                else:
+                    agg[tag]["format_err"] += 1
+                    print(f"round {r} {tag}: FORMAT REJECTION HTTP "
+                          f"{rr['status']} — {rr['error']}")
+                continue
+            agg[tag]["ok"] += 1
+            reasoned = rr["rc_len"] > 0 or rr["rtoks"] > 0
+            if reasoned:
+                agg[tag]["reasoned"] += 1
+            agg[tag]["rc_tot"] += rr["rc_len"]
+            agg[tag]["rtoks_tot"] += rr["rtoks"]
+            if "get_weather" in rr["next_tools"]:
+                agg[tag]["weather_calls"] += 1
+            print(
+                f"round {r} {tag}: 200 reasoned={reasoned} rc_len={rr['rc_len']} "
+                f"rtoks={rr['rtoks']} next={rr['next_tools'] or '(final answer)'} "
+                f"({rr['ms'] * 1000:.0f}ms)"
+            )
+    print(f"\n=== verdict (per leg, {valid} clean rounds, effort={EFFORT}) ===")
     for tag in ("A_real", "B_missing", "C_space"):
         a = agg[tag]
-        avg = f"{a['rc_tot'] / a['ok']:.1f}" if a["ok"] else "-"
+        avg_rc = f"{a['rc_tot'] / a['ok']:.1f}" if a["ok"] else "-"
+        avg_rt = f"{a['rtoks_tot'] / a['ok']:.1f}" if a["ok"] else "-"
         print(
-            f"  {tag:<10} status_ok={a['ok']}/{a['ok'] + a['err']} "
-            f"reasoned={a['reasoned']}/{a['ok']} avg_rc_len={avg}"
+            f"  {tag:<10} ok={a['ok']} reasoned={a['reasoned']}/{a['ok']} "
+            f"avg_rc_len={avg_rc} avg_rtoks={avg_rt} "
+            f"weather_calls={a['weather_calls']}/{a['ok']} "
+            f"format_err={a['format_err']} transient={a['transient']}"
         )
     b = agg["B_missing"]
-    if b["err"] > 0:
-        print("  => B_missing (no reasoning_content) is NOT tolerated: "
-              "OR->Baidu enforces the DeepSeek presence contract.")
-    elif b["ok"] > 0 and b["reasoned"] < agg["A_real"]["reasoned"]:
-        print("  => B_missing degrades continuation reasoning vs real text.")
-    else:
-        print("  => B_missing tolerated without measurable reasoning loss "
-              "(at low effort) — further check warranted only if A/B differ "
-              "at higher effort.")
+    if b["format_err"]:
+        print("  => B_missing (no reasoning_content) is FORMAT-REJECTED on "
+              "this route (HTTP 4xx) — OpenRouter->Baidu enforces the "
+              "DeepSeek presence contract.")
+    elif b["ok"]:
+        print("  => missing reasoning_content is TOLERATED on this route "
+              "(no 4xx format rejection). Continuation reasoning above shows "
+              "whether replay quality matters. Transient errors (429/5xx) "
+              "are provider rate/availability issues, not format verdicts.")
 
 
 if __name__ == "__main__":

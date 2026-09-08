@@ -65,15 +65,19 @@ LITELLM_MODEL=deepseek/deepseek-v4-flash .venv/bin/python probes/reasoning_forma
 ## Probe 2 — `tool_replay_tolerance.py`
 
 Tool-call continuation trio (the shape the pipe/pi extension fight over), all
-on one provider per run: turn 1 makes a real tool call; the continuation then
-replays the assistant message in three variants — A: with the REAL
-`reasoning_content` text, B: WITHOUT the field (how Open WebUI rebuilds
-assistant history), C: with the `" "` placeholder (what both fixes force).
-`tools` and `reasoning_effort: low` are constant across legs and calls.
+on one provider per run. TWO-STEP tool task (the continuation must have
+something to reason about — a single relayed tool result produces 0
+reasoning tokens in every leg at effort low, so the probe could not
+discriminate; see git history for v1): turn 1 calls `get_date`, the
+continuation must compute "tomorrow" and call `get_weather`. The replayed
+assistant message then differs only in its `reasoning_content`:
+A: the REAL text, B: NO field (how Open WebUI rebuilds assistant history),
+C: the `" "` placeholder (what both fixes force).
 
 Measures per leg over N rounds (default 2): HTTP status (tolerance — does
-OR→Baidu 400 on a missing field like raw DeepSeek does?), and whether the
-continuation still reasons.
+OR→Baidu 400 on a missing field like raw DeepSeek does?), continuation
+reasoning (length + usage reasoning tokens), and whether the chain
+continues to `get_weather`.
 
 ```bash
 .venv/bin/python probes/tool_replay_tolerance.py [rounds=2]                 # OR → Baidu
