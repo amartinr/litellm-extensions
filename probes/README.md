@@ -147,6 +147,29 @@ LITELLM_MODEL=deepseek/deepseek-v4-flash .venv/bin/python probes/tool_replay_tol
   reasoning; the " " placeholder occasionally yields zero reasoning on a
   continuation.
 
+### Native-route comparison (deepseek/deepseek-v4-flash, direct API, 2026-09-08)
+
+Same contract-form payload (reasoning object with explicit keys), two runs on
+the trap prompt:
+
+- `none`: reasoned (82 / 23 reasoning tokens).
+- `on_low` (`enabled:true` + `effort:"low"`): reasoned (51 / 89) —
+  indeterminate vs default with n=2 (ranges overlap); no evidence the object
+  effort level is honored on the native route, no evidence it is not.
+- `off` (`enabled:false` + `effort:"none"`): reasoned in BOTH runs
+  (152 / 49) — the contract-form OFF is NOT honored on the native route.
+
+Combined with the OR-route results, OFF is strictly per-route dialect:
+
+| OFF spelling | native DeepSeek | OR → Baidu |
+|---|---|---|
+| `thinking:{type:"disabled"}` | honored (native kill-switch; 0 deltas verified in the companion repo) | ignored (reasoned 47-57 tokens, 3 runs) |
+| `reasoning:{enabled:false, effort:"none"}` | ignored (reasoned 152/49 tokens, 2 runs) | honored (0 tokens, 3 runs) |
+
+No single OFF spelling works on both routes. Level control (effort low via
+the object) is honored on OR (with the over-spend noted above) and
+indeterminate on native.
+
 ### Transients
 
 Baidu rate-limited 2 of ~40 probe requests across the day (one 429 mid-run,
