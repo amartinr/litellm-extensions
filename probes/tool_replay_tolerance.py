@@ -143,7 +143,7 @@ def chat(messages):
         "model": MODEL,
         "messages": messages,
         "tools": TOOLS,
-        "reasoning_effort": EFFORT,
+        "reasoning": {"enabled": True, "effort": EFFORT},
         "max_tokens": MAX_TOKENS,
         "stream": False,
     }

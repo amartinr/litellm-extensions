@@ -13,22 +13,23 @@ OR exposes per-model reasoning metadata in GET /api/v1/models (queried
       "default_effort": "high"
     }
 
+Payload rule (user directive): always send explicit key names and values;
+never rely on inference. The reasoning control is the OR object with BOTH
+keys, "enabled" and "effort", even when redundant (effort "none" is sent
+alongside enabled false). No root-level spellings are used (root
+reasoning_effort and the thinking object were probed and removed on
+2026-09-08 — root reasoning_effort:"none" does not disable on this route,
+and thinking:{type:disabled} is ignored; see git history and README).
+
 - supported_efforts == DeepSeek's native 3 levels (low/high/max). DeepSeek's
   own docs collapse the wider OR vocabulary: medium->high, xhigh->high.
-- `thinking` is NOT part of the OR API. Observed ignored on this route: the
-  DeepSeek-native kill-switch thinking:{type:disabled} does not disable
-  reasoning (the client pays for reasoning it asked to disable).
-- OR-native disable reasoning:{effort:none} works (mandatory: false). Root
-  reasoning_effort:"none" does NOT disable on this route (probed: still
-  reasoned 53-55 tokens; "none" is not part of the model's supported set
-  nor of OpenAI's reasoning_effort vocabulary — the root param is passed
-  through to the DeepSeek-native mechanism, vocab low/high/max).
-- Spelling asymmetry observed: reasoning_effort:"low" (root) behaves like
-  native low (modest), while reasoning:{effort:"low"} (object) burned the
-  full 256-token budget on a trivial prompt. Object internals undocumented.
+- History/root spellings ruled out on 2026-09-08 (see README, Results):
+  thinking:{type:disabled} is ignored on this route; root
+  reasoning_effort:"none" does not disable. The reasoning object with
+  explicit keys (enabled + effort) is the only control used.
 
 Each leg is one short request. A leg marked UNEXPECTED means the endpoint
-drifted from the contract above (or the open question resolved differently).
+drifted from the contract above.
 
 Constraints
 -----------
@@ -46,14 +47,14 @@ Constraints
 Usage
 -----
     .venv/bin/python probes/reasoning_format_tolerance.py [leg ...]
-    # default = all legs (6 requests); pass leg ids for a subset:
-    .venv/bin/python probes/reasoning_format_tolerance.py root_none thinking_off
+    # default = all legs (3 requests); pass leg ids for a subset:
+    .venv/bin/python probes/reasoning_format_tolerance.py off
     LITELLM_MODEL=deepseek/deepseek-v4-flash .venv/bin/python probes/....py
 
 Cost
 ----
-6 requests, short prompt, max_tokens=256, effort low (off legs ~zero) =>
-well under $0.001 on the OpenRouter route, including the obj_low burn leg.
+3 requests, short prompt, max_tokens=256, effort low (off legs ~zero) =>
+well under $0.001 on the OpenRouter route.
 """
 
 import json
@@ -86,19 +87,19 @@ def _api_key() -> str:
 KEY = _api_key()
 
 # leg id -> (extra body params, expected reasoning, description)
+# Payload rule (user directive): always send explicit key names and values.
+# The reasoning control is the OR object with BOTH keys — "effort" and
+# "enabled" — even when redundant (effort none + enabled false). No
+# root-level spellings are probed (root reasoning_effort / thinking were
+# removed; see git history for the 2026-09-08 findings that ruled them out).
 LEGS = [
     ("none", {}, True,
-     "no params (OR metadata: default enabled, default effort high)"),
-    ("root_low", {"reasoning_effort": EFFORT}, True,
-     "root reasoning_effort low: recommended ON spelling, native vocab"),
-    ("obj_none", {"reasoning": {"effort": "none"}}, False,
-     "OR object reasoning.effort none (verified off; mandatory: false)"),
-    ("thinking_off", {"thinking": {"type": "disabled"}}, True,
-     "DeepSeek-native kill-switch: ignored on this route (regression "
-     "monitor — clients that disable thinking still pay for reasoning)"),
-    ("obj_low", {"reasoning": {"effort": EFFORT}}, True,
-     "OR object reasoning.effort low: observed full-budget burn anomaly "
-     "(monitor — same nominal low as root_low, different cost)"),
+     "no reasoning params (OR metadata: default enabled, effort high)"),
+    ("on_low", {"reasoning": {"enabled": True, "effort": EFFORT}}, True,
+     "OR object, explicit keys: enabled true + effort low (contract form)"),
+    ("off", {"reasoning": {"enabled": False, "effort": "none"}}, False,
+     "OR object, explicit keys: enabled false + effort none, sent both "
+     "(contract form, redundant on purpose)"),
 ]
 
 
@@ -181,9 +182,9 @@ def main():
     wanted = sys.argv[1:] or [leg[0] for leg in LEGS]
     print(f"target model : {MODEL}  (effort for reasoning-on legs: {EFFORT})")
     print(f"prompt       : {PROMPT!r}")
-    print("note: root reasoning_effort:\"none\" was probed (2 runs, 2026-09-08)"
-          " and does NOT disable on this route — removed as a leg; the only"
-          " OFF spelling is the OR object (obj_none).")
+    print("payload rule: reasoning object with explicit keys (enabled + effort)")
+    print("             -- no root-level spellings (see git history for the "
+          "findings that removed them)")
     print(f"{'leg':<14}{'status':<7}{'reasoned':<9}{'exp':<9}{'rc_len':<7}"
           f"{'rtoks':<6}{'fields':<60}note")
     results = {}

@@ -22,20 +22,29 @@ key):
 }
 ```
 
+Payload rule (user directive): always send explicit key names and values;
+never rely on inference or omit keys. The reasoning control is the OR object
+with BOTH keys — `enabled` and `effort` — even when redundant
+(`{"enabled": false, "effort": "none"}` for OFF). Root-level spellings are
+not used.
+
+Rationale for the payload rule (findings of 2026-09-08, probed before the
+rule was set; see git history):
+
+- `thinking` is not part of the OR API and is ignored on this route — the
+  DeepSeek-native kill-switch `thinking:{type:disabled}` does not disable
+  reasoning (still reasoned in two runs, confirmed after a gateway restart).
+- Root `reasoning_effort:"none"` does not disable on this route (2 runs,
+  still reasoned 53-55 tokens); "none" is not in the model's supported set
+  nor in OpenAI's own `reasoning_effort` vocabulary.
+- Object-spelling cost: `reasoning:{effort:"low"}` and
+  `reasoning:{enabled:true, effort:"low"}` both spent the full 256-token
+  budget on a reasoning-trap prompt (`finish: length`) while root
+  `reasoning_effort:"low"` was modest — the burn is a property of the object
+  spelling on this provider, not of omitted keys.
 - `supported_efforts` == DeepSeek's native 3 levels (low/high/max); OR
   exposes no extra levels for this model. DeepSeek's own docs collapse the
   wider vocabulary: `medium`→`high`, `xhigh`→`high`.
-- `thinking` is not part of the OR API and is ignored on this route — the
-  DeepSeek-native kill-switch `thinking:{type:disabled}` does not disable
-  reasoning (verified: the leg still reasoned; confirmed after a gateway
-  restart).
-- OR-native disable `reasoning:{effort:"none"}` works (`mandatory: false`).
-  Root `reasoning_effort:"none"` does NOT disable on this route (probed: 2
-  runs, still reasoned 53-55 tokens) — "none" is not in the model's
-  supported set nor in OpenAI's own `reasoning_effort` vocabulary.
-- Spelling asymmetry (verified): root `reasoning_effort:"low"` behaves like
-  native low (modest), while the object `reasoning:{effort:"low"}` spent the
-  full 256-token budget on a trivial prompt (`finish: length`).
 - Tool-call histories: OR accepts `reasoning_content` on assistant messages
   as an alias for its `reasoning` field (docs, best-practices/
   reasoning-tokens); missing field is tolerated here (no 4xx) and real-text
@@ -55,7 +64,7 @@ key):
    API) is a comparison baseline only, via `LITELLM_MODEL` — a comparison
    run still uses a single provider throughout.
 4. **Small, precise probes.** Short prompts, `max_tokens` capped (256), no
-   streaming. Full default run ≈ 14 requests ≈ well under one cent on the
+   streaming. Full default run ≈ 11 requests ≈ well under one cent on the
    OpenRouter route.
 
 ## Setup
@@ -67,30 +76,29 @@ export LITELLM_MASTER_KEY=sk-...   # or LITELLM_KEY (never written to disk)
 
 ## Probe 1 — `reasoning_format_tolerance.py`
 
-Six single-turn legs, one request each. Each leg encodes a contract
+Three single-turn legs, one request each. Each leg encodes a contract
 expectation; `UNEXPECTED` means the endpoint drifted from it.
 
 | leg | extra body params | expected reasoning | role |
 |---|---|---|---|
 | `none` | *(none)* | yes | OR metadata default (enabled, effort high) |
-| `root_low` | `reasoning_effort:"low"` | yes | recommended ON spelling (native vocab) |
-| `obj_none` | `reasoning:{effort:"none"}` | no | OR-native OFF (verified) |
-| `thinking_off` | `thinking:{type:"disabled"}` | yes | regression: DeepSeek kill-switch ignored on OR |
-| `obj_low` | `reasoning:{effort:"low"}` | yes | monitor: object-spelling full-budget burn |
+| `on_low` | `reasoning:{enabled:true, effort:"low"}` | yes | contract form, ON |
+| `off` | `reasoning:{enabled:false, effort:"none"}` | no | contract form, OFF (both keys sent) |
 
 ```bash
 .venv/bin/python probes/reasoning_format_tolerance.py            # OR → Baidu
 # comparison baseline (same legs, native route, single provider):
 LITELLM_MODEL=deepseek/deepseek-v4-flash .venv/bin/python probes/reasoning_format_tolerance.py
 # rerun only some legs (economize):
-.venv/bin/python probes/reasoning_format_tolerance.py root_none thinking_off
+.venv/bin/python probes/reasoning_format_tolerance.py off
 ```
 
 ## Probe 2 — `tool_replay_tolerance.py`
 
-Tool-call continuation trio, one provider per run. Two-step tool task (turn 1
-calls `get_date`; the continuation must compute "tomorrow" and call
-`get_weather`), so the continuation has something to reason about — a
+Tool-call continuation trio, one provider per run. Reasoning control is the
+explicit-key object (`reasoning:{enabled:true, effort:"low"}`). Two-step tool
+task (turn 1 calls `get_date`; the continuation must compute "tomorrow" and
+call `get_weather`), so the continuation has something to reason about — a
 single-step relay produces no reasoning at effort `low` in any leg (v1 flaw,
 see git history). The replayed assistant message differs only in its
 `reasoning_content`: A: the REAL text, B: NO field (how Open WebUI rebuilds
@@ -107,45 +115,41 @@ not format verdicts.
 LITELLM_MODEL=deepseek/deepseek-v4-flash .venv/bin/python probes/tool_replay_tolerance.py [rounds=2]
 ```
 
-## Results (2026-09-08, target: OpenRouter → Baidu fp8, effort low)
+## Results (2026-09-08, target: OpenRouter → Baidu fp8)
 
-### Probe 1 — request-format matrix
+### Probe 1 — contract-form matrix (explicit keys)
 
-- All spellings returned HTTP 200. No 4xx format rejection, no 426.
-- Reasoning engages by default (`none`) and responses are normalized by
-  LiteLLM to `reasoning_content` + `provider_specific_fields.reasoning`
-  (readable by both clients).
-- `thinking:{type:"disabled"}` NOT honored (49 / 27 reasoning tokens in two
-  runs, confirmed after a gateway restart) — DeepSeek kill-switch lost on
-  this route; only OR-native OFF works.
-- `reasoning:{effort:"none"}` honored: 0 reasoning tokens. Root
-  `reasoning_effort:"none"` is NOT an OFF mechanism here (probed, 2 runs:
-  still reasoned 53-55 tokens).
-- Spelling asymmetry at the same nominal `low`: root `reasoning_effort`
-  → 64 reasoning tokens; object `reasoning:{effort:"low"}` → full 256-token
-  budget (`finish: length`, no answer).
+- `none`: reasons by default (109 reasoning tokens on the trap prompt —
+  default effort is high per OR metadata).
+- `on_low` (`enabled:true` + `effort:"low"`): reasons, spent the full
+  256-token budget (`finish: length`) on the trap prompt. The burn observed
+  earlier with the simplified object persists with explicit keys — it is a
+  property of the object spelling on this provider, not of omitted keys.
+  In tool tasks (probe 2) the same object-low is modest (28-52 tokens).
+- `off` (`enabled:false` + `effort:"none"`): 0 reasoning tokens — the
+  contract-form OFF works.
 
-### Probe 2 — tool-call continuation trio (two-step task, 7 clean rounds total)
+### Probe 2 — tool-call continuation trio (two-step task, clean rounds)
 
 - All legs HTTP 200: a missing `reasoning_content` on the tool-call
   assistant message is TOLERATED on this route (no 4xx). Raw DeepSeek
   rejects it (400); LiteLLM-native injects a placeholder + warning.
-- The chain continues to `get_weather` in every leg (7/7 per leg).
-- Continuation reasoning richness ranks A > B ≈ C:
+- The chain continues to `get_weather` in every leg.
+- Continuation reasoning richness ranks A > B ≈ C (pooled across runs):
 
   | leg (replayed assistant reasoning_content) | reasoned | avg rc len |
   |---|---|---|
-  | A_real (real text) | 7/7 | 95 |
-  | B_missing (no field — Open WebUI rebuild) | 7/7 | 59 |
-  | C_space (" " placeholder — client fallback) | 6/7 | 47–74 |
+  | A_real (real text) | ~11/11 | ~93 |
+  | B_missing (no field — Open WebUI rebuild) | ~11/11 | ~60 |
+  | C_space (" " placeholder — client fallback) | ~10/11 | ~55 |
 
   Real-text replay gives the richest, most consistent continuation
   reasoning; the " " placeholder occasionally yields zero reasoning on a
-  continuation (1/4 in one run).
+  continuation.
 
 ### Transients
 
-Baidu rate-limited 2 of ~25 probe requests (one 429 mid-run, one earlier),
-all outside peak windows and at minimal volume. The route is tolerant of
-format variations; its constraint is intermittent 429s, consistent with the
-gateway's failure metrics for this provider.
+Baidu rate-limited 2 of ~40 probe requests across the day (one 429 mid-run,
+one earlier), all outside peak windows and at minimal volume. The route is
+tolerant of format variations; its constraint is intermittent 429s,
+consistent with the gateway's failure metrics for this provider.
