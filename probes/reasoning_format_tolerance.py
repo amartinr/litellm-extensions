@@ -199,7 +199,7 @@ def main():
             f"{','.join(res['fields'])[:58]:<60}{verdict} | {res['note']}"
         )
     print("\n=== verdict ===")
-    for leg_id, _, expected in LEGS:
+    for leg_id, _, expected, _ in LEGS:
         if leg_id not in results:
             continue
         res, _ = results[leg_id]
