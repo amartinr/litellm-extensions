@@ -30,6 +30,9 @@ key):
   reasoning (verified: the leg still reasoned; confirmed after a gateway
   restart).
 - OR-native disable `reasoning:{effort:"none"}` works (`mandatory: false`).
+  Root `reasoning_effort:"none"` does NOT disable on this route (probed: 2
+  runs, still reasoned 53-55 tokens) — "none" is not in the model's
+  supported set nor in OpenAI's own `reasoning_effort` vocabulary.
 - Spelling asymmetry (verified): root `reasoning_effort:"low"` behaves like
   native low (modest), while the object `reasoning:{effort:"low"}` spent the
   full 256-token budget on a trivial prompt (`finish: length`).
@@ -71,7 +74,6 @@ expectation; `UNEXPECTED` means the endpoint drifted from it.
 |---|---|---|---|
 | `none` | *(none)* | yes | OR metadata default (enabled, effort high) |
 | `root_low` | `reasoning_effort:"low"` | yes | recommended ON spelling (native vocab) |
-| `root_none` | `reasoning_effort:"none"` | no | open question: does the root spelling disable? |
 | `obj_none` | `reasoning:{effort:"none"}` | no | OR-native OFF (verified) |
 | `thinking_off` | `thinking:{type:"disabled"}` | yes | regression: DeepSeek kill-switch ignored on OR |
 | `obj_low` | `reasoning:{effort:"low"}` | yes | monitor: object-spelling full-budget burn |
@@ -116,7 +118,9 @@ LITELLM_MODEL=deepseek/deepseek-v4-flash .venv/bin/python probes/tool_replay_tol
 - `thinking:{type:"disabled"}` NOT honored (49 / 27 reasoning tokens in two
   runs, confirmed after a gateway restart) — DeepSeek kill-switch lost on
   this route; only OR-native OFF works.
-- `reasoning:{effort:"none"}` honored: 0 reasoning tokens.
+- `reasoning:{effort:"none"}` honored: 0 reasoning tokens. Root
+  `reasoning_effort:"none"` is NOT an OFF mechanism here (probed, 2 runs:
+  still reasoned 53-55 tokens).
 - Spelling asymmetry at the same nominal `low`: root `reasoning_effort`
   → 64 reasoning tokens; object `reasoning:{effort:"low"}` → full 256-token
   budget (`finish: length`, no answer).

@@ -18,7 +18,11 @@ OR exposes per-model reasoning metadata in GET /api/v1/models (queried
 - `thinking` is NOT part of the OR API. Observed ignored on this route: the
   DeepSeek-native kill-switch thinking:{type:disabled} does not disable
   reasoning (the client pays for reasoning it asked to disable).
-- OR-native disable reasoning:{effort:none} works (mandatory: false).
+- OR-native disable reasoning:{effort:none} works (mandatory: false). Root
+  reasoning_effort:"none" does NOT disable on this route (probed: still
+  reasoned 53-55 tokens; "none" is not part of the model's supported set
+  nor of OpenAI's reasoning_effort vocabulary — the root param is passed
+  through to the DeepSeek-native mechanism, vocab low/high/max).
 - Spelling asymmetry observed: reasoning_effort:"low" (root) behaves like
   native low (modest), while reasoning:{effort:"low"} (object) burned the
   full 256-token budget on a trivial prompt. Object internals undocumented.
@@ -87,9 +91,6 @@ LEGS = [
      "no params (OR metadata: default enabled, default effort high)"),
     ("root_low", {"reasoning_effort": EFFORT}, True,
      "root reasoning_effort low: recommended ON spelling, native vocab"),
-    ("root_none", {"reasoning_effort": "none"}, False,
-     "root reasoning_effort none: does the root spelling disable? "
-     "(OR parameter docs list none)"),
     ("obj_none", {"reasoning": {"effort": "none"}}, False,
      "OR object reasoning.effort none (verified off; mandatory: false)"),
     ("thinking_off", {"thinking": {"type": "disabled"}}, True,
@@ -180,6 +181,9 @@ def main():
     wanted = sys.argv[1:] or [leg[0] for leg in LEGS]
     print(f"target model : {MODEL}  (effort for reasoning-on legs: {EFFORT})")
     print(f"prompt       : {PROMPT!r}")
+    print("note: root reasoning_effort:\"none\" was probed (2 runs, 2026-09-08)"
+          " and does NOT disable on this route — removed as a leg; the only"
+          " OFF spelling is the OR object (obj_none).")
     print(f"{'leg':<14}{'status':<7}{'reasoned':<9}{'exp':<9}{'rc_len':<7}"
           f"{'rtoks':<6}{'fields':<60}note")
     results = {}
