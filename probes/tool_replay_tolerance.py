@@ -3,12 +3,15 @@
 
 Purpose
 -------
-DeepSeek's API requires `reasoning_content` on every assistant message once
-a history contains tool calls (missing field = HTTP 400 on the raw API;
-LiteLLM injects a " " placeholder + warning on the native route). The
-clients in front of this gateway replay the real reasoning text, a " "
-placeholder, or nothing (Open WebUI rebuild). Does the OpenRouter->Baidu
-route require the field? Does replay quality change continuation reasoning?
+OR contract for DeepSeek tool-calling histories (docs, best-practices/
+reasoning-tokens): pass the previous reasoning back in assistant messages
+(message.reasoning, or `reasoning_content` — an accepted alias) so the model
+continues its chain after tool results. On raw DeepSeek a missing field is
+HTTP 400; through this gateway the native route injects a placeholder +
+warning. The clients in front of this gateway replay the real reasoning
+text, a " " placeholder, or nothing (Open WebUI rebuild). This probe
+measures, on the OpenRouter->Baidu route, whether the field is required
+(4xx tolerance) and whether replay quality changes continuation reasoning.
 
 Design (v2)
 -----------
@@ -23,6 +26,10 @@ must compute "tomorrow" from the get_date result and call get_weather:
     continuation (legs differ only in the replayed assistant's
     reasoning_content): model reasons again, computes tomorrow, calls
     get_weather, answers.
+
+Established so far on this route (2026-09-08): missing reasoning_content is
+tolerated (no 4xx — OR does not enforce DeepSeek's presence validation) and
+real-text replay gives the richest continuation reasoning.
 
 Constraints
 -----------

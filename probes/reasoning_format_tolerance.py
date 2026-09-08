@@ -1,40 +1,55 @@
 #!/usr/bin/env python3
-"""Probe 1 — reasoning-format tolerance, LiteLLM -> OpenRouter -> Baidu (fp8).
+"""Probe 1 — reasoning-format contract monitor, LiteLLM -> OpenRouter -> Baidu.
 
-Purpose
--------
-Clients in front of this gateway (Open WebUI pipe `agent_loop_guard`, pi
-`pi-deepseek-reasoning-chain-fix`) speak DeepSeek's native reasoning
-vocabulary: `thinking` + root `reasoning_effort`, and `reasoning_content` on
-assistant messages. When the time_router hook reroutes the
-`litellm/deepseek-v4-flash` alias to OpenRouter in peak hours, those requests
-reach the OR API, which documents its own unified `reasoning` object. This
-probe measures, one short request per shape, which forms the OR->Baidu
-deployment tolerates and whether reasoning still engages (and can be
-disabled).
+Contract under test (deepseek/deepseek-v4-flash-0731 via OpenRouter)
+--------------------------------------------------------------------
+OR exposes per-model reasoning metadata in GET /api/v1/models (queried
+2026-09-08, no key needed):
+
+    "reasoning": {
+      "mandatory": false,
+      "default_enabled": true,
+      "supported_efforts": ["max", "high", "low"],
+      "default_effort": "high"
+    }
+
+- supported_efforts == DeepSeek's native 3 levels (low/high/max). DeepSeek's
+  own docs collapse the wider OR vocabulary: medium->high, xhigh->high.
+- `thinking` is NOT part of the OR API. Observed ignored on this route: the
+  DeepSeek-native kill-switch thinking:{type:disabled} does not disable
+  reasoning (the client pays for reasoning it asked to disable).
+- OR-native disable reasoning:{effort:none} works (mandatory: false).
+- Spelling asymmetry observed: reasoning_effort:"low" (root) behaves like
+  native low (modest), while reasoning:{effort:"low"} (object) burned the
+  full 256-token budget on a trivial prompt. Object internals undocumented.
+
+Each leg is one short request. A leg marked UNEXPECTED means the endpoint
+drifted from the contract above (or the open question resolved differently).
 
 Constraints
 -----------
 - API key from env only (LITELLM_KEY or LITELLM_MASTER_KEY); refuses to run
   without it. Never hardcoded.
-- Reasoning on Baidu is exercised at effort "low" (credit budget);
-  LITELLM_EFFORT overrides (e.g. for a native comparison run).
+- Reasoning-on legs use effort "low" (credit budget). LITELLM_EFFORT
+  overrides. Off legs cost ~nothing.
 - One provider per run. Default target model: openrouter/deepseek-v4-flash
-  (OR -> Baidu fp8, provider.order ["baidu/fp8"], no fallbacks). Native
-  comparison: LITELLM_MODEL=deepseek/deepseek-v4-flash.
+  (LiteLLM alias -> OR deepseek-v4-flash-0731 -> Baidu fp8, provider.order
+  ["baidu/fp8"], no fallbacks). Native comparison:
+  LITELLM_MODEL=deepseek/deepseek-v4-flash (same contract probe on the
+  direct-API route).
 - No cross-provider histories: every request is single-turn and standalone.
 
 Usage
 -----
     .venv/bin/python probes/reasoning_format_tolerance.py [leg ...]
-    # default = all legs (7 requests); pass leg ids for a subset:
-    .venv/bin/python probes/reasoning_format_tolerance.py native_off or_off
+    # default = all legs (6 requests); pass leg ids for a subset:
+    .venv/bin/python probes/reasoning_format_tolerance.py root_none thinking_off
     LITELLM_MODEL=deepseek/deepseek-v4-flash .venv/bin/python probes/....py
 
 Cost
 ----
-7 requests, short prompt, max_tokens=256, effort low => well under $0.001 on
-the OpenRouter route (subsets cost less).
+6 requests, short prompt, max_tokens=256, effort low (off legs ~zero) =>
+well under $0.001 on the OpenRouter route, including the obj_low burn leg.
 """
 
 import json
@@ -68,47 +83,21 @@ KEY = _api_key()
 
 # leg id -> (extra body params, expected reasoning, description)
 LEGS = [
-    ("none", {}, True, "no reasoning params (DeepSeek default: thinking ON)"),
-    (
-        "native_on",
-        {"thinking": {"type": "enabled"}, "reasoning_effort": EFFORT},
-        True,
-        "DeepSeek-native ON: thinking + root reasoning_effort",
-    ),
-    (
-        "root_effort",
-        {"reasoning_effort": EFFORT},
-        True,
-        "OpenAI-style root reasoning_effort (documented OR param)",
-    ),
-    (
-        "or_reasoning",
-        {"reasoning": {"effort": EFFORT}},
-        True,
-        "OR-native unified reasoning object",
-    ),
-    (
-        "native_off",
-        {"thinking": {"type": "disabled"}},
-        False,
-        "DeepSeek kill-switch: thinking disabled (honored through OR->Baidu?)",
-    ),
-    (
-        "or_off",
-        {"reasoning": {"effort": "none"}},
-        False,
-        "OR-native OFF: reasoning.effort none",
-    ),
-    (
-        "mixed",
-        {
-            "thinking": {"type": "enabled"},
-            "reasoning_effort": EFFORT,
-            "reasoning": {"effort": EFFORT},
-        },
-        True,
-        "conflicting/redundant formats all at once (tolerated? which wins?)",
-    ),
+    ("none", {}, True,
+     "no params (OR metadata: default enabled, default effort high)"),
+    ("root_low", {"reasoning_effort": EFFORT}, True,
+     "root reasoning_effort low: recommended ON spelling, native vocab"),
+    ("root_none", {"reasoning_effort": "none"}, False,
+     "root reasoning_effort none: does the root spelling disable? "
+     "(OR parameter docs list none)"),
+    ("obj_none", {"reasoning": {"effort": "none"}}, False,
+     "OR object reasoning.effort none (verified off; mandatory: false)"),
+    ("thinking_off", {"thinking": {"type": "disabled"}}, True,
+     "DeepSeek-native kill-switch: ignored on this route (regression "
+     "monitor — clients that disable thinking still pay for reasoning)"),
+    ("obj_low", {"reasoning": {"effort": EFFORT}}, True,
+     "OR object reasoning.effort low: observed full-budget burn anomaly "
+     "(monitor — same nominal low as root_low, different cost)"),
 ]
 
 
@@ -210,10 +199,10 @@ def main():
             f"{','.join(res['fields'])[:58]:<60}{verdict} | {res['note']}"
         )
     print("\n=== verdict ===")
-    for leg_id, desc_expected in [(l[0], l) for l in LEGS]:
+    for leg_id, _, expected in LEGS:
         if leg_id not in results:
             continue
-        res, expected = results[leg_id]
+        res, _ = results[leg_id]
         exp_str = "reasoned" if expected else "no reasoning"
         if res["status"] != 200:
             state = f"NOT TOLERATED (HTTP {res['status']})"
