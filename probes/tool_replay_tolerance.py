@@ -166,16 +166,17 @@ def one_round():
         },
     ]
 
-    # Leg A: replay the REAL reasoning text. Leg B: omit the field entirely
-    # (how Open WebUI rebuilds assistant messages). Leg C: force " " (what the
-    # pipe / pi extension send when no real text is available).
+    # The base assistant (as built above) has NO reasoning_content field —
+    # that is exactly leg B (how Open WebUI rebuilds assistant messages), so
+    # B_missing needs no mutation. Leg A replays the REAL reasoning text;
+    # leg C forces the " " placeholder (what the pipe / pi extension send
+    # when no real text is available).
     legs = {
         "A_real": json.loads(json.dumps(history)),
         "B_missing": json.loads(json.dumps(history)),
         "C_space": json.loads(json.dumps(history)),
     }
     legs["A_real"][1]["reasoning_content"] = real_rc or " "
-    del legs["B_missing"][1]["reasoning_content"]  # never present
     legs["C_space"][1]["reasoning_content"] = " "
 
     out = {}
@@ -222,10 +223,10 @@ def main():
     print("\n=== verdict (per leg) ===")
     for tag in ("A_real", "B_missing", "C_space"):
         a = agg[tag]
+        avg = f"{a['rc_tot'] / a['ok']:.1f}" if a["ok"] else "-"
         print(
             f"  {tag:<10} status_ok={a['ok']}/{a['ok'] + a['err']} "
-            f"reasoned={a['reasoned']}/{a['ok']} avg_rc_len="
-            f"{(a['rc_tot'] / a['ok']):.1f if a['ok'] else '-'}"
+            f"reasoned={a['reasoned']}/{a['ok']} avg_rc_len={avg}"
         )
     b = agg["B_missing"]
     if b["err"] > 0:
