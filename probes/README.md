@@ -94,3 +94,46 @@ Response fields (`reasoning_content` / `reasoning` /
 `provider_specific_fields`) are logged per request: LiteLLM normalizes the OR
 response back to DeepSeek shape; a change there (e.g. reasoning only in
 `provider_specific_fields`) would affect what both clients can store/replay.
+
+## Results (2026-09-08, target: OpenRouter → Baidu fp8, effort low)
+
+### Probe 1 — single-turn format matrix
+
+- All 7 request shapes returned HTTP 200. No 4xx format rejection, no 426.
+- Reasoning engages by default (`none`) and with all "on" forms; responses
+  are normalized by LiteLLM to `reasoning_content` +
+  `provider_specific_fields.reasoning` (readable by both clients).
+- `thinking: {"type": "disabled"}` (DeepSeek-native kill-switch) is NOT
+  honored on this route: the leg still reasoned (49 / 27 reasoning tokens in
+  two runs). Confirmed again after a gateway restart.
+- `reasoning: {"effort": "none"}` (OR-native off) is honored: 0 reasoning
+  tokens.
+- Effort semantics differ by format: `reasoning: {"effort": "low"}` (OR
+  object) spent the full 256-token budget on reasoning on a trivial prompt
+  (`finish: length`, no answer), while native forms
+  (`thinking` + `reasoning_effort: low`) used 47–87 tokens.
+
+### Probe 2 — tool-call continuation trio (two-step task, 7 clean rounds total)
+
+- All legs HTTP 200: a missing `reasoning_content` on the tool-call
+  assistant message is TOLERATED on this route (no 4xx). Raw DeepSeek
+  rejects it (400); LiteLLM-native injects a placeholder + warning.
+- The chain continues to `get_weather` in every leg (7/7 per leg).
+- Continuation reasoning richness ranks A > B ≈ C:
+
+  | leg (replayed assistant reasoning_content) | reasoned | avg rc len |
+  |---|---|---|
+  | A_real (real text) | 7/7 | 95 |
+  | B_missing (no field — Open WebUI rebuild) | 7/7 | 59 |
+  | C_space (" " placeholder — client fallback) | 6/7 | 47–74 |
+
+  Real-text replay gives the richest, most consistent continuation
+  reasoning; the " " placeholder occasionally yields zero reasoning on a
+  continuation (1/4 in one run).
+
+### Transients
+
+Baidu rate-limited 2 of ~25 probe requests (one 429 mid-run, one earlier),
+all outside peak windows and at minimal volume. The route is tolerant of
+format variations; its constraint is intermittent 429s, consistent with the
+gateway's failure metrics for this provider.
