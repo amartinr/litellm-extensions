@@ -1,247 +1,299 @@
-# DESIGN — Reasoning-payload normalization for the OpenRouter route
+# DESIGN — Reasoning-payload normalization at the LiteLLM gateway
 
-Status: draft for review
-Repo: litellm-extensions (gateway hook alongside `time_router.py`)
-Companion evidence: `probes/` (live tolerance results, 2026-09-08)
+Status: ready for implementation
+Branch: `main` (repo `litellm-extensions`)
+Reference code to mirror: `time_router.py` (module layout, config loading,
+logging, registration). Live evidence: `probes/` (2026-09-08) and the
+results recorded in `probes/README.md`.
 
-## 1. Rationale
+This document is self-contained: an agent without session context must be
+able to implement `reasoning_route_adapter.py` from it alone. Where a
+decision depends on evidence, the evidence and its source are cited.
 
-### 1.1 Problem
+---
 
-The gateway serves the same DeepSeek model family through two upstreams with
-different reasoning dialects:
+## 1. Context
 
-- **Native DeepSeek** (`api.deepseek.com`, deployments `deepseek/deepseek-v4-flash`,
-  `deepseek/deepseek-v4-pro`): chat-completions reasoning control is
-  DeepSeek-native — `thinking: {type: enabled|disabled}` + root
-  `reasoning_effort: low|high|max`. Assistant-message reasoning is carried in
-  `reasoning_content` and **required** on every assistant message of a
-  tool-calling history (missing field → 400 on the raw API; LiteLLM injects a
-  `" "` placeholder + warning).
-- **OpenRouter** (`openrouter.ai`, deployment `openrouter/deepseek-v4-flash` →
-  Baidu fp8): reasoning control is the OR object
-  `reasoning: {enabled, effort}` (its documented contract; per-model metadata
-  for `deepseek-v4-flash-0731`: `supported_efforts ["max","high","low"]`,
-  `default_effort "high"`, `mandatory false`). Assistant-message reasoning may
-  use OR's `reasoning` field or `reasoning_content`, which OR documents as an
-  alias ("functions identically").
+### 1.1 Deployment
 
-The client cannot know which upstream will serve a request: `time_router`
-reroutes the `litellm/deepseek-v4-flash` alias by clock (off-peak → native,
-peak → OR), and `router_settings.fallbacks` can redirect `deepseek/...` to
-`openrouter/...` after a failure. A single client payload therefore reaches
-whichever endpoint LiteLLM selects, and each endpoint ignores or mis-handles
-the other dialect's control.
+LiteLLM proxy v1.99.0, DB-less, single `config.yaml`. The gateway serves
+DeepSeek models through two upstreams with different reasoning dialects:
 
-### 1.2 Measured consequences (live, OR → Baidu and native, effort low unless noted)
+| Upstream | model_list entry | reasoning control (chat completions) | assistant-message reasoning |
+|---|---|---|---|
+| Native DeepSeek (`api.deepseek.com/v1`) | `deepseek/deepseek-v4-flash`, `deepseek/deepseek-v4-pro` | `thinking: {type: enabled\|disabled}` + root `reasoning_effort: low\|high\|max` | `reasoning_content` (required on every assistant message of a tool-calling history; missing → 400 on the raw API) |
+| OpenRouter (Baidu fp8) | `openrouter/deepseek-v4-flash` (upstream `deepseek/deepseek-v4-flash-0731`, `provider.order: ["baidu/fp8"]`) | OR object `reasoning: {enabled, effort}` (per-model metadata: `supported_efforts ["max","high","low"]`, `default_effort "high"`, `mandatory false`) | `reasoning` (canonical) or `reasoning_content` (documented alias, "functions identically") |
 
-| # | Payload control | Native DeepSeek | OR → Baidu | Source |
-|---|---|---|---|---|
-| 1 | `thinking:{type:"disabled"}` | honored (native kill-switch; 0 deltas verified in companion-repo probes) | **ignored** — still reasoned, 47–57 reasoning tokens, 3 runs | probes 2026-09-08 |
-| 2 | `reasoning:{enabled:false, effort:"none"}` | **ignored** — still reasoned, 152/49 tokens, 2 runs | honored — 0 tokens, 3+ runs | probes 2026-09-08 |
-| 3 | `reasoning:{enabled:true, effort:"low"}` (and simplified object) | indeterminate vs default (51/89 vs 23/82, n=2) | honored but over-spends: 164–256 tokens on a trap prompt vs 47–109 default | probes 2026-09-08 |
-| 4 | root `reasoning_effort:"low"` | honored (native vocab) | cheap: 49–64 tokens (kept out of the current probe suite per review; git history) | probes 2026-09-08 |
-| 5 | assistant messages with `reasoning_content` | required (native field) | accepted alias of `reasoning` | OR docs + probe 2 |
-| 6 | missing `reasoning_content` on tool history | 400 (raw) / placeholder+warning (LiteLLM) | tolerated (no 4xx); real-text replay gives the richest continuation | probes 2026-09-08 |
+`time_router.py` (pre-call hook, registered first) reroutes the public alias
+`litellm/deepseek-v4-flash` to one of the two upstreams by clock and session
+stickiness. `router_settings.fallbacks` can also redirect
+`deepseek/deepseek-v4-flash` → `openrouter/deepseek-v4-flash` after a
+failure.
 
-Consequences:
+### 1.2 Client contract (assumption — read first)
 
-- **Kill-switch is lost on OR**: a client that disables reasoning with the
-  DeepSeek-native switch (what the pi agent sends when the user turns
-  reasoning off) still pays for reasoning when the request lands on OR
-  (peak alias traffic, or a direct-call fallback). No error is raised — the
-  failure is silent and costs money.
-- **OR-object OFF is lost on native**: a client that speaks the OR object
-  (the standardized contract form) cannot disable reasoning on the native
-  route (rows 2 vs 1).
-- No single client control spelling works on both upstreams for OFF (rows 1
-  and 2 are complementary), and the cheapest ON spelling differs per route
-  (rows 3 and 4).
+All current LiteLLM clients speak the **DeepSeek-native dialect** (or send no
+reasoning control at all). They never send the OR `reasoning` object:
 
-### 1.3 Why normalize at the gateway
+- **pi coding agent** → `deepseek/deepseek-v4-flash` (native), model config
+  static in `~/.pi/agent/models.json`. Sends assistant messages with
+  `reasoning_content` (forced/replayed by the
+  `pi-deepseek-reasoning-chain-fix` extension when the history has tool
+  calls). Reasoning control is native: `thinking:{type:"disabled"}` when the
+  user disables reasoning; root `reasoning_effort` when the user sets a
+  level. Reaches OR only via router fallback.
+- **Open WebUI pipe (`agent_loop_guard`)** → `litellm/deepseek-v4-flash`
+  (alias, rerouted by `time_router`). Sends assistant messages with
+  `reasoning_content`; sends **no** reasoning control params (OWUI filters
+  do not run on pipe models).
+- The OR object `reasoning:{enabled,effort}` is only emitted by the probe
+  scripts in `probes/` and by any future client that adopts it. It is not
+  emitted by today's clients.
 
-The route is only known inside LiteLLM, after `time_router`'s reroute
-decision. LiteLLM config has no per-model callback attachment (callbacks in
-`litellm_settings` are global), so the documented mechanism is a global
-`CustomLogger` that filters by model inside its `async_pre_call_hook` —
-exactly the pattern `time_router` already uses. A separate hook module keeps
-the concerns apart (routing vs payload normalization).
+Consequence: the **active normalization path is OR-bound native-dialect
+control** (a native-dialect payload landing on OpenRouter). The object→native
+translation is a dormant safeguard for a client that adopts the object.
 
-### 1.4 Goals
+### 1.3 Measured behavior driving the design (live, effort low; `probes/`, 2026-09-08)
 
-1. Each upstream receives reasoning control it honors: OFF works on both
-   routes with the payload the client actually sent.
-2. Zero client changes: Open WebUI pipe and pi agent payloads stay as-is.
-3. Minimal, evidence-based transformations only — no speculative rewrites
-   that could regress cost or behavior.
-4. Deterministic, idempotent, fail-open, no state.
+| # | Payload control | Native DeepSeek | OR → Baidu |
+|---|---|---|---|
+| 1 | `thinking:{type:"disabled"}` | honored (native kill-switch; 0 deltas verified in companion repo) | **ignored** — still reasoned, 47–57 reasoning tokens, 3 runs |
+| 2 | `reasoning:{enabled:false, effort:"none"}` | **ignored** — still reasoned, 152/49 tokens, 2 runs | honored — 0 tokens, 3+ runs |
+| 3 | `reasoning:{enabled:true, effort:"low"}` | indeterminate vs default (n=2) | honored but over-spends: 164–256 tokens on a trap prompt vs 47–109 default |
+| 4 | root `reasoning_effort:"low"` | honored (native vocab) | cheap: 49–64 tokens |
+| 5 | assistant messages with `reasoning_content` | required (native field) | accepted alias (OR docs + probe 2) |
+| 6 | missing `reasoning_content` on tool history | 400 (raw) / placeholder+warning (LiteLLM) | tolerated (no 4xx) |
 
-### 1.5 Non-goals
+Derived rules (do not deviate without new evidence):
 
-- Renaming `reasoning_content` → `reasoning` on OR-bound messages. OR
-  documents the alias as identical (row 5); no functional difference was
-  measured (probe 2 legs all 200 with `reasoning_content` replay), and the
-  native route requires exactly `reasoning_content`. Message replay stays
-  `reasoning_content` on both routes (round-trip consistent with what
-  LiteLLM returns to clients).
-- Translating root `reasoning_effort` into the OR object on OR-bound
-  requests. Evidence (rows 3–4): the object over-spends on OR while the root
-  spelling is cheap; translating would regress cost.
-- Per-model callback attachment in config.yaml (not supported by LiteLLM).
-- Changing what clients send.
+- The **only** control a current client sends that a route mishandles is
+  `thinking:{type:"disabled"}` landing on OR (row 1): the user asked for no
+  reasoning and pays for it silently. This is the problem this hook fixes.
+- The OR object must **never** be synthesized for ON on the OR route
+  (rows 3–4): `reasoning:{effort:...}` over-spends there while root
+  `reasoning_effort` is cheap.
+- Assistant messages are **never** rewritten: `reasoning_content` is native
+  on DeepSeek and an accepted alias on OR (row 5). No
+  `reasoning_content` → `reasoning` rename (Option A decision).
+- On the native route, native control already works (row 1 native column);
+  only an incoming OR object needs translation (row 2 native column).
 
-## 2. Design
+## 2. Goals
 
-### 2.1 Module and registration
+1. Each upstream receives reasoning control it honors, for the payload the
+   client actually sent. Concretely: `thinking:{type:"disabled"}` arriving on
+   the OR route disables reasoning.
+2. Zero client changes.
+3. Minimal, evidence-based transformations only.
+4. Deterministic, idempotent, fail-open, stateless, no I/O.
 
-New file `reasoning_route_adapter.py` in this repo, mounted at `/app/`
-alongside `time_router.py` (the proxy working directory). Module-level
-instance, registered after `time_router` so it sees the rerouted model:
+## 3. Non-goals
+
+- Renaming `reasoning_content` → `reasoning` on OR-bound messages (§1.3, row 5).
+- Translating root `reasoning_effort` into the OR object on OR-bound requests
+  (§1.3, rows 3–4).
+- Changing what clients send; per-model callback config (unsupported).
+- Solving the object-ON over-spend on OR (client-contract decision, tracked
+  separately).
+
+## 4. Module specification — `reasoning_route_adapter.py`
+
+### 4.1 Layout and registration
+
+File at repo root (mounted at `/app/` next to `config.yaml` and
+`time_router.py`). Mirror `time_router.py`:
+
+- `CONFIG_PATHS` and a module-level `ROUTE_MAP: dict[str, str]` built from
+  `model_info.metadata.route` per `model_list` entry (copy
+  `time_router._load_route_map`; keep the module import safe — no
+  `litellm.proxy` imports at module level).
+- `class ReasoningRouteAdapter(CustomLogger)` implementing
+  `async async_pre_call_hook(self, user_api_key_dict, cache, data, call_type)`
+  → returns `data`.
+- Module instance `proxy_handler_instance = ReasoningRouteAdapter()`.
+
+Registration (order matters — `time_router` first, it reroutes; the adapter
+reads the rerouted model):
 
 ```yaml
 litellm_settings:
   callbacks:
     - 'prometheus'
-    - 'time_router.proxy_handler_instance'                  # 1. route decision
-    - 'reasoning_route_adapter.proxy_handler_instance'       # 2. payload normalization
+    - 'time_router.proxy_handler_instance'
+    - 'reasoning_route_adapter.proxy_handler_instance'
 ```
 
-Class: `ReasoningRouteAdapter(CustomLogger)` implementing
-`async_pre_call_hook(self, user_api_key_dict, cache, data, call_type)`,
-returning `data` (mutated) or `data` unchanged. Same lazy-logger pattern as
-`time_router` (`verbose_proxy_logger`; JSON lines when `json_logs: true`).
+### 4.2 Input schema (`data` in `async_pre_call_hook`)
 
-### 2.2 Route classification
+`data` is the request dict, mirroring the client body at its root keys. The
+adapter reads/mutates only:
 
-Classify the request from `data["model"]` after `time_router` has run:
-
-- Build the model → route map from `config.yaml` the same way `time_router`
-  does (read `model_info.metadata.route` per `model_list` entry from
-  `LITELLM_CONFIG_FILE` / `/app/config.yaml`). Route label `"deepseek"` →
-  native upstream; `"baidu/fp8"` → OR upstream.
-- Unknown models (e.g. `anthropic/...`) → no-op.
-- If `time_router` is disabled, direct calls still carry their model name and
-  classify correctly; the alias `litellm/deepseek-v4-flash` without reroute
-  is not classified (its default deployment is OR) — document as a fallback
-  case.
-
-### 2.3 OR-bound transformations (route label `baidu/fp8`)
-
-Single purpose: rescue the DeepSeek-native control that OR ignores.
-
-| Condition (request body) | Transformation | Rationale |
+| Key | Type | Notes |
 |---|---|---|
-| `thinking` present and `thinking.type == "disabled"` | Set `reasoning = {"enabled": false, "effort": "none"}` (explicit keys per payload contract); remove `thinking` | OR ignores `thinking` (row 1); the object OFF is its documented contract (row 2) |
-| `thinking` present and `thinking.type == "enabled"` | Remove `thinking` only | OR ignores it; thinking is the provider default anyway; do not synthesize an object (row 3: object ON over-spends) |
-| root `reasoning_effort` present | Leave untouched | Cheap on OR (row 4); do not translate into the object |
-| `reasoning_content` on assistant messages | Leave untouched | Accepted alias (row 5) |
+| `data["model"]` | str | Effective model after `time_router` reroute. Read-only. |
+| `data["thinking"]` | dict | Native control `{type: "enabled"\|"disabled"}` (clients) |
+| `data["reasoning"]` | dict | OR object `{enabled: bool, effort: str}` (probes/future clients) |
+| `data["reasoning_effort"]` | str | Root native/OpenAI-style effort (clients) |
+| `data["messages"]` | list | **Never modified.** |
+| everything else | — | Never touched. |
 
-Before/after (kill-switch rescue):
+Presence semantics: absent key → not sent. `data["thinking"]` and
+`data["reasoning"]` may coexist (dual-spelling clients); the adapter makes
+them consistent per route (see 4.5).
+
+### 4.3 Route classification
+
+`route = ROUTE_MAP.get(data["model"])`:
+
+- `route == "deepseek"` → native-bound.
+- `route == "baidu/fp8"` → OR-bound.
+- model not in `ROUTE_MAP` (unlisted models, e.g. `anthropic/...`, or the
+  alias if `time_router` did not reroute) → **no-op** (return `data`
+  unchanged; DEBUG log).
+
+Do not hardcode model names; derive everything from `ROUTE_MAP` (config
+driven, same source as `time_router`). If new route labels appear in config,
+extend the two label sets via env/constant (defaults: native `{"deepseek"}`,
+OR `{"baidu/fp8"}`) — see 4.6.
+
+### 4.4 OR-bound rules (route label `baidu/fp8`)
+
+Goal: make native-dialect control behave on OR. Rules, evaluated on the
+request dict, in order:
+
+1. `thinking` present:
+   - `thinking.type == "disabled"` → **rescue**: set
+     `reasoning = {"enabled": false, "effort": "none"}`; delete `thinking`;
+     delete `reasoning_effort` if present. (OR ignores `thinking`, row 1;
+     object OFF is its documented contract, row 2.)
+   - `thinking.type == "enabled"` → delete `thinking` only (OR ignores it;
+     thinking is the provider default anyway; never synthesize an object —
+     rows 3–4).
+2. `reasoning` present → leave as-is (already OR dialect).
+3. Root `reasoning_effort` present (no `thinking`) → leave as-is (cheap on
+   OR, row 4).
+4. Nothing reasoning-related present → no-op.
+
+Example (pi fallback to OR, reasoning off):
 
 ```json
-// client (pi agent, reasoning off, direct-call fallback to OR):
-{ "model": "openrouter/deepseek-v4-flash",
-  "messages": [ { "role": "assistant", "content": "...", "reasoning_content": "..." } ],
-  "thinking": { "type": "disabled" } }
-
-// upstream payload after adapter:
-{ "model": "openrouter/deepseek-v4-flash",
-  "messages": [ /* unchanged */ ],
-  "reasoning": { "enabled": false, "effort": "none" } }
+// in:  { "model": "openrouter/deepseek-v4-flash",
+//        "thinking": { "type": "disabled" },
+//        "reasoning_effort": "low" }
+// out: { "model": "openrouter/deepseek-v4-flash",
+//        "reasoning": { "enabled": false, "effort": "none" } }
 ```
 
-### 2.4 Native-bound transformations (route label `deepseek`)
+### 4.5 Native-bound rules (route label `deepseek`)
 
-Pass through payloads that already speak native (pi: `thinking` + root
-`reasoning_effort`; OWU: no control). Only translate when a client sends the
-OR object — the standardized contract form — which native ignores (row 2):
+Goal: pass through native-dialect payloads untouched (they already work) and
+translate an incoming OR object so OFF/effort behave on native (row 2).
 
-| Condition | Transformation |
-|---|---|
-| `reasoning.enabled == false` or `reasoning.effort == "none"` | Set `thinking = {"type": "disabled"}`; remove `reasoning`; remove root `reasoning_effort` if present |
-| `reasoning.enabled == true` and `reasoning.effort` in `low/high/max` | Set `thinking = {"type": "enabled"}` and `reasoning_effort = <effort>`; remove `reasoning`. Map OR-only values per DeepSeek's table: `medium → high`, `xhigh → high` |
-| `reasoning` absent | Leave untouched (payload already native or empty control) |
-| assistant messages | Leave untouched (`reasoning_content` is the native field) |
+1. `reasoning` present:
+   - OFF: `reasoning.enabled is False` or `reasoning.effort == "none"` →
+     set `thinking = {"type": "disabled"}`; delete `reasoning`; delete
+     `reasoning_effort` if present.
+   - ON: `reasoning.enabled is True` and `reasoning.effort` maps per the
+     vocabulary table → set `thinking = {"type": "enabled"}` and
+     `reasoning_effort = <mapped>`; delete `reasoning`.
+   - Effort vocabulary (DeepSeek collapse table; unknown/unmappable value →
+     omit `reasoning_effort`, thinking enabled only):
 
-Before/after (object-speaking client, OFF, native route):
+     | input effort | mapped `reasoning_effort` |
+     |---|---|
+     | `low`, `high`, `max` | same |
+     | `medium`, `xhigh` | `high` |
+     | `minimal` | `low` |
+     | `none` | handled by the OFF branch |
+2. `thinking` present (native dialect) → leave as-is (native honors it).
+3. Root `reasoning_effort` present → leave as-is.
+4. Nothing reasoning-related present → no-op.
+
+Example (probe/future client with OR object, OFF, native route):
 
 ```json
-// client:
-{ "model": "deepseek/deepseek-v4-flash",
-  "messages": [ { "role": "assistant", "content": "...", "reasoning_content": "..." } ],
-  "reasoning": { "enabled": false, "effort": "none" } }
-
-// upstream payload after adapter:
-{ "model": "deepseek/deepseek-v4-flash",
-  "messages": [ /* unchanged */ ],
-  "thinking": { "type": "disabled" } }
+// in:  { "model": "deepseek/deepseek-v4-flash",
+//        "reasoning": { "enabled": false, "effort": "none" } }
+// out: { "model": "deepseek/deepseek-v4-flash",
+//        "thinking": { "type": "disabled" } }
 ```
 
-### 2.5 Execution rules
+### 4.6 Execution rules
 
-- Fail-open: every transformation wrapped; on any exception, log once
-  (rate-limited) and return `data` unchanged.
-- Deterministic and idempotent: pure dict operations on `data`; re-running
-  over an already-normalized payload changes nothing.
-- Never touches `messages` content, `tools`, `stream`, or non-reasoning
-  params.
-- Only the outbound hop is affected; responses and client-visible behavior
-  are unchanged.
+- `REASONING_ADAPTER_DISABLED=1` (env) → return `data` unchanged (rollback).
+- Fail-open: wrap in `try/except`; on exception log once (rate-limited, copy
+  `time_router._rate_limited_warning`) and return `data` unchanged.
+- Idempotent: re-running over an already-normalized payload is a no-op
+  (check rules: `thinking` gone, `reasoning` set → no further change).
+- `data` keys are deleted with `data.pop(key, None)`; values set in place.
+- Logging via lazy `verbose_proxy_logger` import (copy `time_router._log`).
+  Always log one line per applied transformation:
+  `ReasoningAdapter: model=... route=... action=kill_switch_rescue|drop_thinking|object_to_native|...`.
+  `REASONING_ADAPTER_DEBUG=1` → log the full before/after reasoning keys.
 
-### 2.6 Configuration and observability
+## 5. Config reference addition
 
-Env knobs (optional):
+Only the registration block of §4.1. No other `config.yaml` change.
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `REASONING_ADAPTER_DISABLED` | unset | Hard disable (testing/rollback) |
-| `REASONING_ADAPTER_DEBUG` | unset | Verbose per-request logging (model, route, transformations applied) |
+## 6. Acceptance criteria (definition of done)
 
-Logging: always emit one line when a transformation is applied
-(`ReasoningAdapter: route=... model=... action=...`); detail behind DEBUG.
-Rate-limit failure warnings (same helper as `time_router`).
+### 6.1 Offline (no network)
 
-## 3. Config reference addition
+Pure-function checks in the repo venv (stdlib only):
 
-`config.yaml.example`: register the hook after `time_router` (section 2.1).
-No other config changes required.
+1. Classification: model→route via a fixture `ROUTE_MAP`
+   (`deepseek/...` → `deepseek`, `openrouter/...` → `baidu/fp8`, unknown →
+   no-op).
+2. §4.4 rule 1 (disabled → object OFF + cleanup) and rule 1b (enabled →
+   drop thinking); before/after byte-exact vs the examples.
+3. §4.5 OFF and ON translations incl. the vocabulary table rows.
+4. Idempotency: applying twice → second is a no-op (returns unchanged, no
+   log).
+5. Fail-open: malformed values (e.g. `thinking: "junk"`) → unchanged data,
+   no exception.
+6. Native-dialect payloads (thinking/root, no object) pass through
+   byte-identical on both routes.
+7. `messages` untouched in every case.
 
-## 4. Verification plan
+### 6.2 Live (gateway, one provider per test; key from env, effort low)
 
-### 4.1 Offline
+Reuse `probes/` conventions (`probes/reasoning_format_tolerance.py` with
+`LITELLM_MODEL=...` for per-route runs). Expected after deployment:
 
-Pure-function checks (no network): classification (model → route), each
-transformation's before/after, idempotency, fail-open on malformed payloads,
-non-reasoning models untouched. Runnable with the repo venv.
+1. OR route (`openrouter/deepseek-v4-flash`) with body
+   `thinking:{type:"disabled"}` → **0 reasoning tokens** (was 47–57).
+2. Native route (`deepseek/deepseek-v4-flash`) with body
+   `reasoning:{enabled:false, effort:"none"}` → **0 reasoning tokens**
+   (was 152/49).
+3. Native route with `reasoning:{enabled:true, effort:"low"}` → low-range
+   reasoning (~50 tokens on the probe prompt).
+4. Regression: native-dialect and no-control payloads produce identical
+   results with the hook on vs off (compare with
+   `REASONING_ADAPTER_DISABLED=1`).
+5. Fallback path: force a direct-call failure so the router falls back to
+   `openrouter/...`, with the client payload carrying `thinking:disabled` —
+   verify whether the pre-call hook re-runs on the fallback attempt and the
+   rescue applies (see 7).
 
-### 4.2 Live (gateway, one provider per test)
+## 7. Open questions (resolve during implementation/deployment)
 
-Reuse `probes/` conventions (env key only, effort low, small payloads):
+- **Pre-call hook ordering** in v1.99.0: confirm with one DEBUG log in the
+  adapter that `data["model"]` is the rerouted name (time_router first in
+  `callbacks`). If the alias model appears un-rewritten, `ROUTE_MAP` lookup
+  decides (no-op unless the alias carries a route label).
+- **Fallback re-execution** (§6.2 item 5): whether `async_pre_call_hook`
+  runs again per fallback attempt is not assumed. If it does not, the
+  pi-direct → OR fallback with `thinking:disabled` is not covered; decide
+  then (options: client dual-spelling OFF, or accept the gap).
+- LiteLLM's own DeepSeek transformation (`transformation.py`, placeholder
+  injection when `reasoning_content` is missing) is orthogonal: clients
+  already carry the field (§1.3 row 5); no interaction expected.
 
-1. OR alias with `thinking:{type:"disabled"}` → expect 0 reasoning tokens
-   (was 47–57 without the hook).
-2. Native with the OR object OFF → expect 0 reasoning tokens (was 152/49).
-3. Native with the OR object ON at `low` → expect low-range reasoning.
-4. Regression: no-control and native-dialect requests produce identical
-   payloads with and without the hook (log comparison, DEBUG on).
-5. Fallback path: force a direct-call failure → OR fallback request — verify
-   whether pre-call hooks run again on the fallback attempt and the
-   kill-switch rescue applies (see 5).
+## 8. Evidence references
 
-## 5. Risks and open questions
-
-- **Pre-call hook ordering**: the design depends on `time_router` running
-  before the adapter within `litellm_settings.callbacks`. Verify execution
-  order in v1.99.0 with one DEBUG log line (adapter logs the model it sees).
-- **Fallback attempts**: whether `async_pre_call_hook` re-runs for the
-  fallback deployment (with the fallback model name) is not assumed — item
-  4.5 verifies it; if hooks do not re-run, the pi-direct → OR fallback case
-  is not covered by the adapter and needs a decision (e.g. client-side
-  dual-spelling OFF).
-- **Object ON over-spend on OR** (row 3) is not solved by this hook — it is
-  intrinsic to the object spelling on OR. If cost control for ON matters,
-  the spelling decision (root vs object) belongs to the client contract and
-  is tracked separately.
-- **LiteLLM's own DeepSeek transformation** (`transformation.py`, placeholder
-  injection when `reasoning_content` is missing) is orthogonal: the clients
-  already carry the field (row 5); no interaction expected.
+- `probes/reasoning_format_tolerance.py`, `probes/tool_replay_tolerance.py`,
+  `probes/README.md` (results recorded 2026-09-08, commits on `main`).
+- OR metadata for `deepseek/deepseek-v4-flash-0731`: `GET
+  https://openrouter.ai/api/v1/models` (public).
+- DeepSeek thinking-mode docs: `api-docs.deepseek.com/guides/thinking_mode/`.
