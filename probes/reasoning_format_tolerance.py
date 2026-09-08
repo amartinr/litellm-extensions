@@ -1,39 +1,40 @@
 #!/usr/bin/env python3
 """Probe 1 — reasoning-format tolerance, LiteLLM -> OpenRouter -> Baidu (fp8).
 
-WHY
----
-The clients in front of this gateway (Open WebUI pipe `agent_loop_guard`, pi
-extension `pi-deepseek-reasoning-chain-fix`) speak DeepSeek's NATIVE reasoning
+Purpose
+-------
+Clients in front of this gateway (Open WebUI pipe `agent_loop_guard`, pi
+`pi-deepseek-reasoning-chain-fix`) speak DeepSeek's native reasoning
 vocabulary: `thinking` + root `reasoning_effort`, and `reasoning_content` on
 assistant messages. When the time_router hook reroutes the
 `litellm/deepseek-v4-flash` alias to OpenRouter in peak hours, those requests
-reach the OR API — which documents its OWN unified `reasoning` object. This
-probe measures, one short request per shape, what the OR->Baidu deployment
-tolerates and whether reasoning still engages (and can be turned OFF).
+reach the OR API, which documents its own unified `reasoning` object. This
+probe measures, one short request per shape, which forms the OR->Baidu
+deployment tolerates and whether reasoning still engages (and can be
+disabled).
 
-RULES (user constraints)
-------------------------
-- API key NEVER hardcoded: read LITELLM_KEY or LITELLM_MASTER_KEY (repo
-  .env.example name). Refuses to run without it.
-- Reasoning on Baidu is exercised at effort "low" only (credit budget);
-  override via LITELLM_EFFORT (e.g. for a native comparison run).
-- One provider per run. Default target model = openrouter/deepseek-v4-flash
-  (OR -> Baidu fp8, provider.order ["baidu/fp8"], no fallbacks). To compare
-  the NATIVE DeepSeek route: LITELLM_MODEL=deepseek/deepseek-v4-flash.
-- No cross-provider histories: every request is single-turn, standalone.
+Constraints
+-----------
+- API key from env only (LITELLM_KEY or LITELLM_MASTER_KEY); refuses to run
+  without it. Never hardcoded.
+- Reasoning on Baidu is exercised at effort "low" (credit budget);
+  LITELLM_EFFORT overrides (e.g. for a native comparison run).
+- One provider per run. Default target model: openrouter/deepseek-v4-flash
+  (OR -> Baidu fp8, provider.order ["baidu/fp8"], no fallbacks). Native
+  comparison: LITELLM_MODEL=deepseek/deepseek-v4-flash.
+- No cross-provider histories: every request is single-turn and standalone.
 
-USAGE
+Usage
 -----
     .venv/bin/python probes/reasoning_format_tolerance.py [leg ...]
-    # default = all legs (7 requests). Pass leg ids to run a subset:
+    # default = all legs (7 requests); pass leg ids for a subset:
     .venv/bin/python probes/reasoning_format_tolerance.py native_off or_off
     LITELLM_MODEL=deepseek/deepseek-v4-flash .venv/bin/python probes/....py
 
-COST
+Cost
 ----
 7 requests, short prompt, max_tokens=256, effort low => well under $0.001 on
-the OpenRouter route (a subset run is cheaper still).
+the OpenRouter route (subsets cost less).
 """
 
 import json

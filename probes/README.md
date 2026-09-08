@@ -1,37 +1,32 @@
-# Probes — tolerance of the OpenRouter→Baidu route to DeepSeek-native reasoning formats
+# Probes — reasoning-format tolerance of the OpenRouter→Baidu route
 
-When the `time_router` hook sends alias traffic (`litellm/deepseek-v4-flash`) to
-OpenRouter during peak windows, the outbound requests are built by clients that
-speak DeepSeek's NATIVE reasoning vocabulary (the Open WebUI `agent_loop_guard`
-pipe and the pi `pi-deepseek-reasoning-chain-fix` extension force/replay
-`reasoning_content` on assistant messages and may carry `thinking` /
-`reasoning_effort` at the root). OpenRouter normalizes reasoning through its own
-`reasoning` object. These probes measure, against the REAL endpoint, which
-request shapes the OpenRouter→Baidu (fp8) deployment of
-`deepseek-v4-flash` tolerates and what actually happens to reasoning.
+Context: clients of this gateway (the Open WebUI `agent_loop_guard` pipe, the
+pi `pi-deepseek-reasoning-chain-fix` extension) build requests in DeepSeek's
+native reasoning vocabulary (`thinking` / root `reasoning_effort`;
+`reasoning_content` on assistant messages). When `time_router` sends alias
+traffic to OpenRouter during peak windows, those requests reach OpenRouter,
+which normalizes reasoning through its own `reasoning` object. These probes
+measure, against the live endpoint, which request shapes the OR→Baidu (fp8)
+deployment of `deepseek-v4-flash` tolerates and what happens to reasoning.
 
-They answer the question behind the session: **does the DeepSeek-native format
-sent by our clients degrade reasoning (or the kill-switch) when the request is
-routed through OpenRouter in peak hours?**
-
-## Rules (hard constraints from the user)
+## Rules
 
 1. **No hardcoded API key.** Key comes from `LITELLM_KEY` or
    `LITELLM_MASTER_KEY` (repo `.env.example` name) — the scripts refuse to run
    without it.
 2. **Reasoning on Baidu is always exercised at effort `low`** (credit budget).
    Override only for a native-DeepSeek comparison run: `LITELLM_EFFORT=...`.
-3. **No cross-provider histories, ever.** Every test starts and ends with ONE
+3. **No cross-provider histories.** Every test starts and ends with ONE
    provider. Default target: `openrouter/deepseek-v4-flash` (OR → Baidu fp8,
    `provider.order: ["baidu/fp8"]`, no fallbacks). The native route
-   (`deepseek/deepseek-v4-flash`, direct API) is used ONLY as a comparison
-   baseline via `LITELLM_MODEL` — a comparison run still uses a single
-   provider for the whole run.
+   (`deepseek/deepseek-v4-flash`, direct API) is a comparison baseline only,
+   via `LITELLM_MODEL` — a comparison run still uses a single provider
+   throughout.
 4. **Small, precise probes.** Short prompts, `max_tokens` capped (256), no
    streaming. Full default run ≈ 15 requests ≈ well under one cent on the
    OpenRouter route.
 
-## Setup (this repo)
+## Setup
 
 ```bash
 python3 -m venv .venv              # stdlib only — no pip installs needed
@@ -41,8 +36,8 @@ export LITELLM_MASTER_KEY=sk-...   # or LITELLM_KEY (never written to disk)
 ## Probe 1 — `reasoning_format_tolerance.py`
 
 Single-turn matrix: one short prompt, seven request-parameter shapes, one
-request each. Measures HTTP tolerance and whether reasoning actually engages
-(and can be switched OFF).
+request each. Measures HTTP tolerance and whether reasoning engages (and can
+be turned off).
 
 | # | leg | extra body params | expected reasoning | question it answers |
 |---|---|---|---|---|
@@ -64,38 +59,38 @@ LITELLM_MODEL=deepseek/deepseek-v4-flash .venv/bin/python probes/reasoning_forma
 
 ## Probe 2 — `tool_replay_tolerance.py`
 
-Tool-call continuation trio (the shape the pipe/pi extension fight over), all
-on one provider per run. TWO-STEP tool task (the continuation must have
-something to reason about — a single relayed tool result produces 0
-reasoning tokens in every leg at effort low, so the probe could not
-discriminate; see git history for v1): turn 1 calls `get_date`, the
-continuation must compute "tomorrow" and call `get_weather`. The replayed
-assistant message then differs only in its `reasoning_content`:
-A: the REAL text, B: NO field (how Open WebUI rebuilds assistant history),
-C: the `" "` placeholder (what both fixes force).
+Tool-call continuation trio, one provider per run. Two-step tool task (turn 1
+calls `get_date`; the continuation must compute "tomorrow" and call
+`get_weather`), so the continuation has something to reason about — a
+single-step relay produces no reasoning at effort `low` in any leg (v1 flaw,
+see git history). The replayed assistant message differs only in its
+`reasoning_content`: A: the REAL text, B: NO field (how Open WebUI rebuilds
+assistant history), C: the `" "` placeholder (what both fixes force).
 
-Measures per leg over N rounds (default 2): HTTP status (tolerance — does
-OR→Baidu 400 on a missing field like raw DeepSeek does?), continuation
-reasoning (length + usage reasoning tokens), and whether the chain
-continues to `get_weather`.
+Measures per leg over N rounds (default 2): HTTP status (4xx = format
+rejection), continuation reasoning (length + usage reasoning tokens), and
+whether the chain continues to `get_weather`. Transient 429/5xx are retried
+with backoff and reported separately — they are provider availability issues,
+not format verdicts.
 
 ```bash
 .venv/bin/python probes/tool_replay_tolerance.py [rounds=2]                 # OR → Baidu
 LITELLM_MODEL=deepseek/deepseek-v4-flash .venv/bin/python probes/tool_replay_tolerance.py [rounds=2]
 ```
 
-## Interpreting the verdicts
+## Interpreting verdicts
 
-- A leg marked **UNEXPECTED** means the endpoint behaved differently from the
-  DeepSeek native contract — that difference is exactly the "impact during
-  peak hours" we are after. The two most important checks:
-  - leg 5 (`native_off`): if it still reasons, the DeepSeek kill-switch is
-    silently lost through OR→Baidu (users who disabled thinking pay for
-    reasoning anyway during peak).
-  - probe 2 leg B: if it 400s, OpenRouter→Baidu enforces the same presence
-    contract as raw DeepSeek, and Open WebUI's rebuild (which strips the
-    field) would break on the OR route — the pipe's forcing is what saves it.
-- Response fields (`reasoning_content` / `reasoning` /
-  `provider_specific_fields`) are logged per request: LiteLLM normalizes the
-  OR response back to DeepSeek shape; a change there (e.g. reasoning only in
-  `provider_specific_fields`) would affect what both clients can store/replay.
+A leg marked **UNEXPECTED** (probe 1) means the endpoint behaved differently
+from the DeepSeek native contract. The two most important checks:
+
+- probe 1 leg 5 (`native_off`): if it still reasons, the DeepSeek kill-switch
+  is silently lost through OR→Baidu (users who disabled thinking pay for
+  reasoning anyway during peak).
+- probe 2 leg B: if it 4xxes, OR→Baidu enforces the presence contract like
+  raw DeepSeek, and Open WebUI's rebuild (which strips the field) would break
+  on the OR route — the pipe's forcing is what prevents that.
+
+Response fields (`reasoning_content` / `reasoning` /
+`provider_specific_fields`) are logged per request: LiteLLM normalizes the OR
+response back to DeepSeek shape; a change there (e.g. reasoning only in
+`provider_specific_fields`) would affect what both clients can store/replay.

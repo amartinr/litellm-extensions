@@ -1,49 +1,47 @@
 #!/usr/bin/env python3
 """Probe 2 — tool-call continuation replay trio, OR->Baidu vs native.
 
-WHY (design)
-------------
-The DeepSeek API contract requires `reasoning_content` on EVERY assistant
-message once a history contains tool calls (missing field = HTTP 400 on the
-raw API; LiteLLM injects a " " placeholder + warning on the native route).
-The clients in front of this gateway replay the REAL reasoning text, a " "
-placeholder, or (Open WebUI rebuild) NOTHING. Does the OpenRouter->Baidu
-route require the field too? Does replaying real text vs placeholder vs
-nothing change continuation reasoning?
+Purpose
+-------
+DeepSeek's API requires `reasoning_content` on every assistant message once
+a history contains tool calls (missing field = HTTP 400 on the raw API;
+LiteLLM injects a " " placeholder + warning on the native route). The
+clients in front of this gateway replay the real reasoning text, a " "
+placeholder, or nothing (Open WebUI rebuild). Does the OpenRouter->Baidu
+route require the field? Does replay quality change continuation reasoning?
 
-PROBE DESIGN (v2): the continuation MUST have something to reason about.
-v1 asked the model to just relay a single tool result — nothing to reason
-about, so every leg produced 0 reasoning tokens at effort low and the probe
-could not discriminate (the model DOES reason at low whenever the task
-requires it: single-turn probes and the tool-calling turn itself produce
-reasoning tokens). This version mirrors the proven native-route A/B
-(open-webui-extensions probes/litellm/03_replay_ab.py): a TWO-STEP tool task
-where the continuation must compute "tomorrow" from the get_date result and
-call get_weather:
+Design (v2)
+-----------
+The continuation must have something to reason about. v1 asked it to relay a
+single tool result — no reasoning at effort low in any leg, so legs could not
+discriminate. v2 mirrors the native-route A/B (open-webui-extensions
+probes/litellm/03_replay_ab.py): a two-step tool task where the continuation
+must compute "tomorrow" from the get_date result and call get_weather:
 
     user: "What will the weather be in Madrid tomorrow? Use the tools."
     turn 1: model reasons + calls get_date
-    continuation (leg A/B/C differ ONLY in the replayed assistant's
+    continuation (legs differ only in the replayed assistant's
     reasoning_content): model reasons again, computes tomorrow, calls
     get_weather, answers.
 
-RULES (user constraints)
-------------------------
-- API key NEVER hardcoded: read LITELLM_KEY or LITELLM_MASTER_KEY.
-- Reasoning exercised at effort "low" only (credit budget); LITELLM_EFFORT
-  override only for a deliberate comparison run.
-- One provider per run: every call in a round uses the SAME model. Default =
+Constraints
+-----------
+- API key from env only (LITELLM_KEY or LITELLM_MASTER_KEY); refuses to run
+  without it. Never hardcoded.
+- Reasoning exercised at effort "low" (credit budget); LITELLM_EFFORT
+  override for a deliberate comparison run.
+- One provider per run: every call in a round uses the same model. Default =
   openrouter/deepseek-v4-flash (OR -> Baidu fp8). Native comparison:
-  LITELLM_MODEL=deepseek/deepseek-v4-flash. NO cross-provider histories.
+  LITELLM_MODEL=deepseek/deepseek-v4-flash. No cross-provider histories.
 - rounds default 2 (each clean round = 1 tool-call request + 3 continuation
   requests = 4 requests); pass a number as argv[1] to change.
 
-USAGE
+Usage
 -----
     .venv/bin/python probes/tool_replay_tolerance.py [rounds=2]
     LITELLM_MODEL=deepseek/deepseek-v4-flash .venv/bin/python probes/tool_replay_tolerance.py [rounds=2]
 
-COST
+Cost
 ----
 rounds=2 => 8 requests, max_tokens=256, effort low => well under $0.001 on
 the OpenRouter route.
@@ -197,7 +195,7 @@ def one_round():
         real_rc = ""
 
     # Continuation history: user, assistant(get_date call), tool result.
-    # The base assistant has NO reasoning_content field = leg B (missing).
+    # The base assistant has no reasoning_content field = leg B (missing).
     history = [
         {"role": "user", "content": USER_MSG},
         {
