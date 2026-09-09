@@ -115,6 +115,26 @@ not format verdicts.
 LITELLM_MODEL=deepseek/deepseek-v4-flash .venv/bin/python probes/tool_replay_tolerance.py [rounds=2]
 ```
 
+## Probe 3 — `reasoning_response_field.py`
+
+Response-field drift monitor. Pi's serializer replays stored reasoning under
+the field name recorded at stream time (its `thinkingSignature`); for the
+replay to stay in the native field (`reasoning_content` - required by the
+native route, accepted alias by OR), the response must deliver the reasoning
+under `reasoning_content`. Two legs per run - `nostream` (message fields)
+and `stream` (delta fields, what pi actually parses):
+
+```bash
+.venv/bin/python probes/reasoning_response_field.py            # OR → Baidu
+LITELLM_MODEL=deepseek/deepseek-v4-flash .venv/bin/python probes/reasoning_response_field.py
+```
+
+`UNEXPECTED` = the canonical OR `reasoning` field carries the reasoning
+while `reasoning_content` is absent/empty in the same response - the drift
+that would change pi's stored signature and make it replay the wrong field
+on the next request (native tolerates the stray field without a 4xx but
+drops its content).
+
 ## Results (2026-09-08, target: OpenRouter → Baidu fp8)
 
 ### Probe 1 — contract-form matrix (explicit keys)
@@ -176,3 +196,38 @@ Baidu rate-limited 2 of ~40 probe requests across the day (one 429 mid-run,
 one earlier), all outside peak windows and at minimal volume. The route is
 tolerant of format variations; its constraint is intermittent 429s,
 consistent with the gateway's failure metrics for this provider.
+
+## Results (2026-09-09)
+
+### Probe 3 - response field (both legs OK, both routes)
+
+- OR → Baidu: non-stream message keys `[content, provider_specific_fields,
+  reasoning_content, role]`; stream delta keys `[content, reasoning_content,
+  reasoning_details, role]`. The reasoning is delivered under
+  `reasoning_content` in both modes - the canonical `reasoning` never
+  appears, so pi stores the native signature after OR-served turns (no
+  adapter/extension intervention needed on this route).
+- Native (`deepseek/deepseek-v4-flash`): `reasoning_content` in both legs
+  (the required native field).
+
+Implication: the pi extension's OR-turn signature normalization
+(`pi-deepseek-reasoning-chain-fix`) is defensive insurance against drift,
+not an active fix on today's route.
+
+### Ad-hoc: native tolerance of replayed-assistant-message shapes (n=1)
+
+Tool-call continuation on the native route through the gateway, three shapes
+of the replayed assistant message (the forms pi produces depending on the
+stored signature and extension scope):
+
+| shape | status | continuation rc len |
+|---|---|---|
+| `missing` (no field) | 200 (LiteLLM injects placeholder) | 84 |
+| `stray` (`reasoning` real + `reasoning_content` `""`) | 200 | 43 |
+| `native` (`reasoning_content` real) | 200 | 104 |
+
+Verdict: the stray canonical `reasoning` field does not 4xx on native via
+the gateway, but its content is silently dropped - the weakest continuation.
+n=1; only the status is a clean verdict. If the response field ever drifts
+to `reasoning` (monitored by probe 3), the replay would degrade this way
+until the extension (or a field mapping) restores `reasoning_content`.

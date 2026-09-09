@@ -44,8 +44,9 @@ DeepSeek models are assumed to already speak the native dialect (or send no
 reasoning control at all); they never send the OR `reasoning` object:
 
 - **pi coding agent** → two LiteLLM configs, both sending the native
-  dialect via its extension (`pi-deepseek-reasoning-chain-fix`): assistant
-  `reasoning_content` forced/replayed when the history has tool calls;
+  dialect once the §9 models.json compat delta is applied (pi core emits it;
+  the extension `pi-deepseek-reasoning-chain-fix` refines it where scoped):
+  assistant `reasoning_content` forced/replayed in tool scope;
   reasoning control native — `thinking:{type:"disabled"}` when the user
   disables reasoning, root `reasoning_effort` when the user sets a level
   (both keys may coexist, per the DeepSeek curl example). Model config
@@ -80,6 +81,15 @@ reasoning control at all); they never send the OR `reasoning` object:
   emit the OR object `reasoning:{effort}` — the dialect that makes the
   native-bound object→native translation (§4.5) live, not just a probe
   artifact.
+
+  This deployment's `models.json` is the provider keyed `litellm` (baseUrl =
+  gateway, `api: openai-completions`): detectCompat classifies it as generic
+  OpenAI (`thinkingFormat: "openai"`), so today reasoning ON emits root
+  `reasoning_effort` but reasoning OFF emits **nothing** — no kill switch
+  reaches the gateway (silent over-spend on both routes). The §9 compat
+  delta makes pi emit the native dialect assumed above; the adapter's
+  peak-hour fix is coupled to it (deploy together). The extension is scoped
+  to `deepseek/...` ids and does not cover the alias model.
 - **Open WebUI pipe (`agent_loop_guard`)** → `litellm/deepseek-v4-flash`
   (alias, rerouted by `time_router`). Sends assistant messages with
   `reasoning_content`; sends **no** reasoning control params (OWUI filters
@@ -344,3 +354,74 @@ Reuse `probes/` conventions (`probes/reasoning_format_tolerance.py` with
   `reasoning_content` 400 rule): `api-docs.deepseek.com/guides/thinking_mode/`.
   Raw-request curl contract (root `thinking` + `reasoning_effort`):
   `api-docs.deepseek.com`. Both verified at implementation time.
+- Response-field drift probe (2026-09-09): `probes/reasoning_response_field.py`
+  and results in `probes/README.md` — the route delivers reasoning under
+  `reasoning_content` (stream and non-stream, OR and native); ad-hoc
+  native-shape tolerance check (n=1) recorded alongside.
+
+## 9. Activation notes (this deployment, 2026-09-09)
+
+The peak-hour fix couples a client-side change with the adapter; they land
+**together** (models.json alone fixes off-peak OFF only — native honors the
+kill switch; the adapter alone has nothing to rescue — pi must emit it).
+
+### 9.1 pi models.json delta
+
+Current state: provider keyed `litellm` (baseUrl = gateway, `api:
+openai-completions`, compat only `supportsDeveloperRole:false` +
+`supportsReasoningEffort:true`). detectCompat classifies it as generic
+OpenAI (`thinkingFormat: "openai"`): reasoning ON emits root
+`reasoning_effort` (honored and cheap on both routes); reasoning OFF emits
+nothing — DeepSeek reasons by default and the user pays for reasoning they
+disabled (silent over-spend, both routes).
+
+Required compat delta:
+
+    "compat": {
+      "supportsDeveloperRole": false,
+      "supportsReasoningEffort": true,
+      "thinkingFormat": "deepseek",   # kill-switch emission
+      "maxTokensField": "max_tokens", # native field name
+      "requiresReasoningContentOnAssistantMessages": true  # tool-scope "" net
+    }
+
+Effects after the delta:
+
+- OFF → `thinking:{type:"disabled"}`: honored natively (off-peak) and
+  rescued by the adapter to the OR OFF object (peak, 0 tokens).
+- ON → `thinking:{type:"enabled"}` is added next to the root
+  `reasoning_effort` (the documented native curl form); behavior is
+  byte-equivalent on both routes (the adapter drops the redundant
+  `thinking` on OR and keeps the cheap root effort).
+- `max_tokens` replaces `max_completion_tokens` (the field DeepSeek
+  documents).
+- Tool scope: pi core forces `reasoning_content` (`""`; the extension
+  forces `" "` where scoped — both accepted, blank-chain equivalent per
+  probes).
+
+### 9.2 Extension `pi-deepseek-reasoning-chain-fix`
+
+Config scope (`extensions/.../config.json`) lists `deepseek/...` ids only —
+the alias `litellm/deepseek-v4-flash` is NOT covered; add it to extend the
+signature-restore/placeholder behavior to the alias. Role after the delta:
+wire-compliance refinement (`" "` vs `""`) and signature restore for
+resumed/persisted sessions (pi core replays real text only when the stored
+thinking block carries a recognized signature). Its OR-turn signature
+normalization is defensive insurance, not active on this route: the gateway
+delivers OR reasoning as `reasoning_content` (probe 3, 2026-09-09), so pi
+already stores the native signature after OR-served turns. If that drifts
+to the canonical `reasoning`, native tolerates the stray field without a
+4xx but drops its content (ad-hoc check 2026-09-09, n=1) and the extension
+becomes the active guard.
+
+### 9.3 Behavioral deltas at deployment
+
+- Off-peak (alias → native): the adapter is a no-op for native-dialect
+  payloads (native-bound rules only act on an OR `reasoning` object).
+  models.json delta: reasoning OFF now actually disables reasoning (the
+  fix); reasoning ON byte-equivalent; `reasoning_content: ""` vs LiteLLM's
+  `" "` placeholder — same blank-chain class.
+- Peak (alias → OR): reasoning ON → the adapter drops the redundant
+  `thinking` and keeps root `reasoning_effort` (cheap on OR) —
+  byte-equivalent outcome; reasoning OFF → `kill_switch_rescue` to the OR
+  OFF object — 0 tokens (was 47-57 and billed).

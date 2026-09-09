@@ -116,6 +116,15 @@ normalizes the payload to the dialect of the bound route - see `DESIGN.md`
 for the rules, evidence and acceptance criteria; `test_reasoning_route_adapter.py`
 runs the offline acceptance checks offline (stdlib only, no network).
 
+The peak-hour fix couples two changes that deploy together (DESIGN.md §9):
+pi must emit the native kill switch (`compat.thinkingFormat: "deepseek"` in
+its `models.json` - without it, reasoning OFF sends no control at all) and
+the adapter must rescue it on the OR route. Response-field drift (the route
+delivering reasoning under OR's canonical `reasoning` instead of
+`reasoning_content`, which would change pi's stored replay signature) is
+monitored by `probes/reasoning_response_field.py` (results 2026-09-09 in
+`probes/README.md`).
+
 ## Limitations
 
 - Session state is **in-memory** (per process, single worker). A proxy restart drops
