@@ -51,7 +51,7 @@ description: >
     (comma-separated route-label sets, defaults deepseek / baidu/fp8 - only
     the fallback taxonomy for entries without a declared dialect).
 required_litellm_version: 1.99.0
-version: 0.2.0
+version: 0.2.1
 licence: MIT
 """
 
