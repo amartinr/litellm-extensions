@@ -1,6 +1,8 @@
 # DESIGN — Reasoning-payload normalization at the LiteLLM gateway
 
-Status: ready for implementation
+Status: implemented (offline acceptance green, 16/16 in
+`test_reasoning_route_adapter.py`, stdlib-only venv); live checks of section
+6.2 pending gateway deployment.
 Branch: `main` (repo `litellm-extensions`)
 Reference code to mirror: `time_router.py` (module layout, config loading,
 logging, registration). Live evidence: `probes/` (2026-09-08) and the
@@ -32,27 +34,65 @@ failure.
 
 ### 1.2 Client contract (assumption — read first)
 
-All current LiteLLM clients speak the **DeepSeek-native dialect** (or send no
-reasoning control at all). They never send the OR `reasoning` object:
+Both current LiteLLM clients (Open WebUI and pi) run an extension that
+formats their DeepSeek requests to the **DeepSeek-native dialect** — the raw
+HTTP contract of `api.deepseek.com`: root keys `thinking:{type:enabled|disabled}`
+and `reasoning_effort`, assistant messages carrying `reasoning_content` (see
+its curl example; the OpenAI-SDK `extra_body` wrapper is an SDK artifact, not
+the wire format LiteLLM forwards). So requests arriving at the gateway for
+DeepSeek models are assumed to already speak the native dialect (or send no
+reasoning control at all); they never send the OR `reasoning` object:
 
-- **pi coding agent** → `deepseek/deepseek-v4-flash` (native), model config
-  static in `~/.pi/agent/models.json`. Sends assistant messages with
-  `reasoning_content` (forced/replayed by the
-  `pi-deepseek-reasoning-chain-fix` extension when the history has tool
-  calls). Reasoning control is native: `thinking:{type:"disabled"}` when the
-  user disables reasoning; root `reasoning_effort` when the user sets a
-  level. Reaches OR only via router fallback.
+- **pi coding agent** → two LiteLLM configs, both sending the native
+  dialect via its extension (`pi-deepseek-reasoning-chain-fix`): assistant
+  `reasoning_content` forced/replayed when the history has tool calls;
+  reasoning control native — `thinking:{type:"disabled"}` when the user
+  disables reasoning, root `reasoning_effort` when the user sets a level
+  (both keys may coexist, per the DeepSeek curl example). Model config
+  static in `~/.pi/agent/models.json`:
+  - alias `litellm/deepseek-v4-flash` → the main path: time_router reroutes
+    it, so in peak windows native-dialect payloads land on OR — the
+    adapter's active normalization path.
+  - LiteLLM configured in pi as a `deepseek` provider requesting the
+    gateway entry `deepseek/deepseek-v4-flash` → served native always
+    (time_router labels only; no rerouting, hence no peak avoidance on this
+    path). Native dialect against the native API: no normalization needed.
+    It reaches OR only when `router_settings.fallbacks` redirects after a
+    native failure — so the fallback pre-call re-execution question (§7) is
+    a live path for pi here, not hypothetical.
+  A provider pointing straight at `api.deepseek.com` (no gateway at all) is
+  the only config the hooks never see; it is not used in this deployment.
+
+  Request construction is pi-side and **provider-driven** (evidence: pi
+  source, `openai-completions` transport, `detectCompat`): the dialect pi
+  emits follows the models.json provider key name / baseUrl, not the model
+  id. A provider keyed `deepseek` (or a baseUrl containing `deepseek.com`)
+  selects the native dialect unconditionally: `thinkingFormat:"deepseek"`
+  sends `thinking:{type:enabled}` + root `reasoning_effort` when reasoning
+  is on, `thinking:{type:disabled}` when off (level values via the model's
+  `thinkingLevelMap`, defaulting to the verbatim pi level);
+  `requiresReasoningContentOnAssistantMessages:true` replays
+  `reasoning_content` on every assistant message (real text when the turn
+  reasoned, `""` otherwise), satisfying the native 400 rule for tool
+  histories. So pi emits native dialect regardless of where the gateway
+  routes the request, and the adapter reconciles by effective route.
+  Corollary: a pi provider keyed `openrouter` pointed at the gateway would
+  emit the OR object `reasoning:{effort}` — the dialect that makes the
+  native-bound object→native translation (§4.5) live, not just a probe
+  artifact.
 - **Open WebUI pipe (`agent_loop_guard`)** → `litellm/deepseek-v4-flash`
   (alias, rerouted by `time_router`). Sends assistant messages with
   `reasoning_content`; sends **no** reasoning control params (OWUI filters
-  do not run on pipe models).
+  do not run on pipe models; its extension keeps the history
+  native-conformant).
 - The OR object `reasoning:{enabled,effort}` is only emitted by the probe
   scripts in `probes/` and by any future client that adopts it. It is not
   emitted by today's clients.
 
 Consequence: the **active normalization path is OR-bound native-dialect
 control** (a native-dialect payload landing on OpenRouter). The object→native
-translation is a dormant safeguard for a client that adopts the object.
+translation is a dormant safeguard for a client that adopts the object — or
+for a pi provider keyed `openrouter` pointed at the gateway (see above).
 
 ### 1.3 Measured behavior driving the design (live, effort low; `probes/`, 2026-09-08)
 
@@ -283,9 +323,13 @@ Reuse `probes/` conventions (`probes/reasoning_format_tolerance.py` with
   `callbacks`). If the alias model appears un-rewritten, `ROUTE_MAP` lookup
   decides (no-op unless the alias carries a route label).
 - **Fallback re-execution** (§6.2 item 5): whether `async_pre_call_hook`
-  runs again per fallback attempt is not assumed. If it does not, the
-  pi-direct → OR fallback with `thinking:disabled` is not covered; decide
-  then (options: client dual-spelling OFF, or accept the gap).
+  runs again per fallback attempt is not assumed. Live path: pi configured
+  against the gateway with model `deepseek/deepseek-v4-flash` (§1.2). When
+  the native deployment fails, fallbacks redirect to `openrouter/...` with
+  a native-dialect payload (`thinking:disabled` included) — if the pre-call
+  hook does not re-run on the fallback attempt, the kill switch is ignored
+  by OR. Options if confirmed: client dual-spelling OFF (send the OR
+  object alongside `thinking`), or accept the gap.
 - LiteLLM's own DeepSeek transformation (`transformation.py`, placeholder
   injection when `reasoning_content` is missing) is orthogonal: clients
   already carry the field (§1.3 row 5); no interaction expected.
@@ -296,4 +340,7 @@ Reuse `probes/` conventions (`probes/reasoning_format_tolerance.py` with
   `probes/README.md` (results recorded 2026-09-08, commits on `main`).
 - OR metadata for `deepseek/deepseek-v4-flash-0731`: `GET
   https://openrouter.ai/api/v1/models` (public).
-- DeepSeek thinking-mode docs: `api-docs.deepseek.com/guides/thinking_mode/`.
+- DeepSeek thinking-mode docs (toggle/effort contract, collapse table,
+  `reasoning_content` 400 rule): `api-docs.deepseek.com/guides/thinking_mode/`.
+  Raw-request curl contract (root `thinking` + `reasoning_effort`):
+  `api-docs.deepseek.com`. Both verified at implementation time.

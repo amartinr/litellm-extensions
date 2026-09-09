@@ -32,9 +32,16 @@ Direct calls to any model listed in `ROUTE_MAP` are labeled (no rerouting).
 ## Scope
 
 Time-based routing and session stickiness apply **only** to requests for the alias
-`litellm/deepseek-v4-flash`. Clients that call a deployment directly (e.g. the `pi`
-agent, which requests `deepseek/deepseek-v4-flash`) never cross providers and are
-only route-labeled.
+`litellm/deepseek-v4-flash`. Clients that call a deployment directly never cross
+providers and are only route-labeled - whether a client participates in rerouting
+depends on the model name it targets (e.g. pi can use the alias to benefit from
+rerouting, or request the gateway's direct `deepseek/deepseek-v4-flash` to stay
+pinned to native). The hooks run on every request that reaches the gateway -
+including pi when LiteLLM is configured in it as a `deepseek` provider (that
+provider's base_url is the gateway; its model name decides the treatment). The
+only config the hooks never see is a provider that points straight at
+`api.deepseek.com` with no gateway in the path, which needs no normalization
+(native dialect against the native API) and gains no peak-price avoidance.
 
 ## Session id source
 
@@ -95,6 +102,19 @@ The hook is imported by LiteLLM as the module `time_router`, so it must live in 
 same directory as `config.yaml` (the proxy working directory). In Docker that is
 `/app` - mount the file there (e.g. `-v ./time_router.py:/app/time_router.py`) and
 restart the container after changes.
+
+## Companion hook — `reasoning_route_adapter`
+
+Clients (Open WebUI and pi, via their extensions) always send the
+DeepSeek-native reasoning dialect (root `thinking`/`reasoning_effort`,
+`reasoning_content` on assistant messages). When such traffic lands on the
+OpenRouter route, that dialect is mishandled: OR ignores `thinking` (a
+`thinking:{type:"disabled"}` still reasons and bills) and only honors its own
+`reasoning` object. `reasoning_route_adapter.py` (registered AFTER
+`time_router` in `callbacks`, since it classifies by the rerouted model)
+normalizes the payload to the dialect of the bound route - see `DESIGN.md`
+for the rules, evidence and acceptance criteria; `test_reasoning_route_adapter.py`
+runs the offline acceptance checks offline (stdlib only, no network).
 
 ## Limitations
 

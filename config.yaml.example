@@ -1,13 +1,16 @@
-# Reference LiteLLM config for time_router.
+# Reference LiteLLM config for time_router and reasoning_route_adapter.
 #
-# Contract required by the hook:
+# Contract required by the hooks:
 #   - every model that participates in routing carries model_info.metadata.route
-#     (the hook builds ROUTE_MAP from it and stamps it as the metadata_route label)
+#     (the hooks build ROUTE_MAP from it; time_router stamps it as the
+#     metadata_route label, reasoning_route_adapter classifies the route by it)
 #   - the alias entry in model_list is the only name clients know
 #   - keys are referenced as os.environ/... (see .env.example)
 #
-# The hook itself is imported as the module `time_router` (file next to this one)
-# and registered under litellm_settings.callbacks.
+# The hooks are imported as the modules `time_router` and
+# `reasoning_route_adapter` (files next to this one) and registered under
+# litellm_settings.callbacks - ORDER MATTERS: time_router first (reroutes the
+# alias), then reasoning_route_adapter (normalizes by the rerouted model).
 
 model_list:
   # Public alias - the only model clients should use. Default deployment points at
@@ -84,6 +87,10 @@ litellm_settings:
   callbacks:
     - 'prometheus'
     - 'time_router.proxy_handler_instance'
+    # AFTER time_router: reads the rerouted model and normalizes reasoning
+    # control to the dialect of the bound route (see DESIGN.md). Rollback:
+    # REASONING_ADAPTER_DISABLED=1.
+    - 'reasoning_route_adapter.proxy_handler_instance'
   custom_prometheus_metadata_labels:
     - "metadata.tool"
     - "metadata.client_host"
