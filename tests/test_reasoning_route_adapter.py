@@ -3,13 +3,16 @@
 
 Stdlib only - runs in the repo venv with no network, no keys, no litellm:
 
-    .venv/bin/python test_reasoning_route_adapter.py
+    .venv/bin/python tests/test_reasoning_route_adapter.py
 
 The module under test imports `yaml` and `litellm.integrations.custom_logger`
 at module level (same layout as time_router.py), so both are stubbed in
-sys.modules before the import; the real proxy provides them. ROUTE_MAP is
-overridden with a fixture mirroring config.yaml.example (the alias entry
-declares route "baidu/fp8" - its default deployment).
+sys.modules before the import; the real proxy provides them. ROUTE_MAP and
+DIALECT_MAP are overridden with fixtures mirroring config.yaml.example:
+every reasoning-capable entry declares model_info.metadata.reasoning_dialect
+(the alias entry declares "openrouter" - its default deployment is OR); one
+fixture entry has only a route label (fallback path) and one declares an
+unrecognized dialect (fail-open path).
 """
 
 import asyncio
@@ -18,6 +21,12 @@ import json
 import os
 import sys
 import types
+from pathlib import Path
+
+# The module under test lives at the repo root; running this file from
+# tests/ puts tests/ on sys.path, so prepend the repo root explicitly.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_REPO_ROOT))
 
 
 # --------------------------------------------------------------------------- stubs
@@ -52,8 +61,23 @@ FIXTURE_ROUTE_MAP = {
     "deepseek/deepseek-v4-pro": "deepseek",
     "openrouter/deepseek-v4-flash": "baidu/fp8",
     "litellm/deepseek-v4-flash": "baidu/fp8",
+    # entry WITHOUT reasoning_dialect -> exercises the route-label fallback
+    "deepseek/legacy-no-dialect": "deepseek",
+    # entry declaring an unrecognized dialect -> fail-open no-op (declared
+    # dialect wins over the route label, which sits in the native set)
+    "deepseek/bogus-dialect": "deepseek",
 }
 mod.ROUTE_MAP = dict(FIXTURE_ROUTE_MAP)
+
+# Mirrors config.yaml.example: every reasoning-capable entry declares its
+# reasoning wire contract in model_info.metadata.reasoning_dialect.
+FIXTURE_DIALECT_MAP = {
+    "deepseek/deepseek-v4-flash": "deepseek",
+    "openrouter/deepseek-v4-flash": "openrouter",
+    "litellm/deepseek-v4-flash": "openrouter",
+    "deepseek/bogus-dialect": "martian",
+}
+mod.DIALECT_MAP = dict(FIXTURE_DIALECT_MAP)
 
 NATIVE = "deepseek/deepseek-v4-flash"
 OR_MODEL = "openrouter/deepseek-v4-flash"
@@ -130,9 +154,19 @@ def clear_env():
 
 # --------------------------------------------------------------------------- 6.1.1 classification
 def test_classification():
-    eq("classify native", mod.ReasoningRouteAdapter._classify(NATIVE), ("native", "deepseek"))
-    eq("classify or", mod.ReasoningRouteAdapter._classify(OR_MODEL), ("or", "baidu/fp8"))
-    eq("classify alias (default OR deployment)", mod.ReasoningRouteAdapter._classify(ALIAS), ("or", "baidu/fp8"))
+    """6.1.1: dialect-declared classification, route-label fallback for entries
+    without the declaration, fail-open on unrecognized declared dialects."""
+    eq("classify native (declared dialect)",
+       mod.ReasoningRouteAdapter._classify(NATIVE), ("native", "deepseek"))
+    eq("classify or (declared dialect)",
+       mod.ReasoningRouteAdapter._classify(OR_MODEL), ("or", "baidu/fp8"))
+    eq("classify alias (declared OR dialect)",
+       mod.ReasoningRouteAdapter._classify(ALIAS), ("or", "baidu/fp8"))
+    eq("classify fallback via route label",
+       mod.ReasoningRouteAdapter._classify("deepseek/legacy-no-dialect"),
+       ("native", "deepseek"))
+    eq("classify unrecognized declared dialect -> no-op",
+       mod.ReasoningRouteAdapter._classify("deepseek/bogus-dialect"), None)
     eq("classify unlisted", mod.ReasoningRouteAdapter._classify(UNLISTED), None)
     eq("classify missing model", mod.ReasoningRouteAdapter._classify(None), None)
     eq("classify non-str", mod.ReasoningRouteAdapter._classify(5), None)

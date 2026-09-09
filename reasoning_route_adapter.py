@@ -8,6 +8,10 @@ description: >
     `time_router.proxy_handler_instance` in `litellm_settings.callbacks` so
     `data["model"]` is the post-reroute model. It normalizes the reasoning
     control of the request to the dialect that the bound route honors.
+    Route classification is config-driven: each model_list entry declares
+    `model_info.metadata.reasoning_dialect` ("deepseek" -> native-bound,
+    "openrouter" -> OR-bound); entries without the declaration fall back to
+    the route-label taxonomy below.
     Clients (Open WebUI and pi, each with an extension) send the
     DeepSeek-native dialect - root keys `thinking:{type:enabled|disabled}` and
     `reasoning_effort` (the raw HTTP contract of api.deepseek.com, see its
@@ -44,9 +48,10 @@ description: >
     Rollback: REASONING_ADAPTER_DISABLED=1 (checked per request).
     Env knobs: REASONING_ADAPTER_DEBUG (verbose logs incl. before/after
     reasoning keys), REASONING_ADAPTER_NATIVE_ROUTES / REASONING_ADAPTER_OR_ROUTES
-    (comma-separated route-label sets, defaults deepseek / baidu/fp8).
+    (comma-separated route-label sets, defaults deepseek / baidu/fp8 - only
+    the fallback taxonomy for entries without a declared dialect).
 required_litellm_version: 1.99.0
-version: 0.1.0
+version: 0.2.0
 licence: MIT
 """
 
@@ -63,8 +68,10 @@ CONFIG_PATHS = [
     "./config.yaml",
 ]
 
-# Per-dialect route-label sets. A config route label outside both sets is
-# treated as unknown -> no-op (extend via env if new labels appear in config).
+# Fallback dialect taxonomy - used only for model_list entries that do NOT
+# declare model_info.metadata.reasoning_dialect in config.yaml (the declared
+# dialect is the primary classification source). A route label outside both
+# sets is treated as unknown -> no-op (extend via env if new labels appear).
 def _label_set(env_name: str, default: list) -> set:
     raw = os.environ.get(env_name)
     if raw:
@@ -89,23 +96,39 @@ EFFORT_MAP = {
 }
 
 
-def _load_route_map():
-    """Builds {model_name: route} from model_info.metadata.route in config.yaml."""
+def _load_route_maps():
+    """Builds {model_name: route} and {model_name: reasoning_dialect} from
+    model_info.metadata of the model_list entries in config.yaml.
+
+    - route (same source as time_router): surfaces as the metadata_route
+      Prometheus label; the fallback taxonomy below keys on it.
+    - reasoning_dialect: the entry's reasoning wire contract - "deepseek"
+      (native thinking / reasoning_effort / reasoning_content) or
+      "openrouter" (reasoning object). Declared per entry in config.yaml;
+      the classifier prefers it over the route-label taxonomy.
+    """
     for p in CONFIG_PATHS:
         if p and os.path.exists(p):
             with open(p) as f:
                 cfg = yaml.safe_load(f)
             route_map = {}
+            dialect_map = {}
             for m in (cfg.get("model_list") or []):
                 name = m.get("model_name")
-                route = (m.get("model_info") or {}).get("metadata", {}).get("route")
-                if name and route:
+                if not name:
+                    continue
+                meta = (m.get("model_info") or {}).get("metadata") or {}
+                route = meta.get("route")
+                if route:
                     route_map[name] = route
-            return route_map
-    return {}
+                dialect = meta.get("reasoning_dialect")
+                if dialect:
+                    dialect_map[name] = dialect
+            return route_map, dialect_map
+    return {}, {}
 
 
-ROUTE_MAP = _load_route_map()
+ROUTE_MAP, DIALECT_MAP = _load_route_maps()
 
 
 def _log():
@@ -150,10 +173,24 @@ class ReasoningRouteAdapter(CustomLogger):
     # ------------------------------------------------------------------ classification
     @classmethod
     def _classify(cls, model):
-        """(side, route_label) for a model, or None when unlisted/unknown."""
+        """(side, label) for a model, or None when unclassified.
+
+        Primary source: the entry-declared `reasoning_dialect` from
+        config.yaml ("deepseek" -> native-bound rules, "openrouter" ->
+        OR-bound rules). Fallback for entries without the declaration: the
+        route-label taxonomy (NATIVE_ROUTE_LABELS / OR_ROUTE_LABELS). A
+        declared-but-unrecognized dialect is fail-open: no-op.
+        """
         if not isinstance(model, str):
             return None
         route = ROUTE_MAP.get(model)
+        dialect = DIALECT_MAP.get(model)
+        if dialect == "deepseek":
+            return ("native", route or dialect)
+        if dialect == "openrouter":
+            return ("or", route or dialect)
+        if dialect is not None:
+            return None  # declared dialect outside the supported vocabulary
         if route in OR_ROUTE_LABELS:
             return ("or", route)
         if route in NATIVE_ROUTE_LABELS:

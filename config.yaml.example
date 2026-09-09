@@ -3,7 +3,13 @@
 # Contract required by the hooks:
 #   - every model that participates in routing carries model_info.metadata.route
 #     (the hooks build ROUTE_MAP from it; time_router stamps it as the
-#     metadata_route label, reasoning_route_adapter classifies the route by it)
+#     metadata_route label)
+#   - every model that can carry reasoning control declares
+#     model_info.metadata.reasoning_dialect - the entry's reasoning wire
+#     contract: "deepseek" (native thinking / reasoning_effort /
+#     reasoning_content) or "openrouter" (the reasoning object).
+#     reasoning_route_adapter classifies by it (the route-label sets in the
+#     hook are only the fallback for entries without the declaration)
 #   - the alias entry in model_list is the only name clients know
 #   - keys are referenced as os.environ/... (see .env.example)
 #
@@ -26,6 +32,9 @@ model_list:
     model_info:
       metadata:
         route: "baidu/fp8"
+        reasoning_dialect: "openrouter"  # alias default deployment is OR; if it
+                                        # ever reaches the adapter un-rewritten,
+                                        # the OR rules apply
 
   # Off-peak target (deepseek direct API).
   - model_name: deepseek/deepseek-v4-flash
@@ -41,6 +50,7 @@ model_list:
     model_info:
       metadata:
         route: "deepseek"
+        reasoning_dialect: "deepseek"
 
   # Peak target (via OpenRouter -> Baidu Qianfan).
   - model_name: openrouter/deepseek-v4-flash
@@ -58,6 +68,7 @@ model_list:
     model_info:
       metadata:
         route: "baidu/fp8"
+        reasoning_dialect: "openrouter"
 
   # Any extra models are fine; entries with a declared route get labeled.
   - model_name: deepseek/deepseek-v4-pro
@@ -71,6 +82,7 @@ model_list:
     model_info:
       metadata:
         route: "deepseek"
+        reasoning_dialect: "deepseek"
 
 general_settings:
   # User identity comes from a header, so different people sharing the master key

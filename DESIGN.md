@@ -1,8 +1,8 @@
 # DESIGN — Reasoning-payload normalization at the LiteLLM gateway
 
 Status: implemented (offline acceptance green, 16/16 in
-`test_reasoning_route_adapter.py`, stdlib-only venv); live checks of section
-6.2 pending gateway deployment.
+`tests/test_reasoning_route_adapter.py`, stdlib-only venv); live checks of
+section 6.2 pending gateway deployment.
 Branch: `main` (repo `litellm-extensions`)
 Reference code to mirror: `time_router.py` (module layout, config loading,
 logging, registration). Live evidence: `probes/` (2026-09-08) and the
@@ -154,10 +154,11 @@ Derived rules (do not deviate without new evidence):
 File at repo root (mounted at `/app/` next to `config.yaml` and
 `time_router.py`). Mirror `time_router.py`:
 
-- `CONFIG_PATHS` and a module-level `ROUTE_MAP: dict[str, str]` built from
-  `model_info.metadata.route` per `model_list` entry (copy
-  `time_router._load_route_map`; keep the module import safe — no
-  `litellm.proxy` imports at module level).
+- `CONFIG_PATHS` and module-level `ROUTE_MAP` (`model_name → route`) and
+  `DIALECT_MAP` (`model_name → reasoning_dialect`), built in one pass from
+  each `model_list` entry's `model_info.metadata` (`route` and
+  `reasoning_dialect`; mirror `time_router._load_route_map`; keep the module
+  import safe — no `litellm.proxy` imports at module level).
 - `class ReasoningRouteAdapter(CustomLogger)` implementing
   `async async_pre_call_hook(self, user_api_key_dict, cache, data, call_type)`
   → returns `data`.
@@ -194,18 +195,23 @@ them consistent per route (see 4.5).
 
 ### 4.3 Route classification
 
-`route = ROUTE_MAP.get(data["model"])`:
+Config-driven, two layers:
 
-- `route == "deepseek"` → native-bound.
-- `route == "baidu/fp8"` → OR-bound.
-- model not in `ROUTE_MAP` (unlisted models, e.g. `anthropic/...`, or the
-  alias if `time_router` did not reroute) → **no-op** (return `data`
-  unchanged; DEBUG log).
+- **Primary — declared dialect.** Each `model_list` entry declares
+  `model_info.metadata.reasoning_dialect`: `"deepseek"` → native-bound,
+  `"openrouter"` → OR-bound. The classifier reads it via `DIALECT_MAP`
+  (`dialect = DIALECT_MAP.get(data["model"])`). A declared dialect outside
+  this vocabulary → **no-op** (fail-open, DEBUG log).
+- **Fallback — route-label taxonomy.** Entries without the declaration are
+  classified by `route = ROUTE_MAP.get(data["model"])` against the label
+  sets (env/constant, defaults native `{"deepseek"}`, OR `{"baidu/fp8"}`).
+- Model with neither (unlisted models, e.g. `anthropic/...`, or the alias
+  if `time_router` did not reroute and it carries no metadata) → **no-op**
+  (return `data` unchanged; DEBUG log).
 
-Do not hardcode model names; derive everything from `ROUTE_MAP` (config
-driven, same source as `time_router`). If new route labels appear in config,
-extend the two label sets via env/constant (defaults: native `{"deepseek"}`,
-OR `{"baidu/fp8"}`) — see 4.6.
+Do not hardcode model names; everything comes from `config.yaml`
+(`reasoning_dialect` preferred, `route` as fallback — same source as
+`time_router`).
 
 ### 4.4 OR-bound rules (route label `baidu/fp8`)
 
@@ -284,7 +290,14 @@ Example (probe/future client with OR object, OFF, native route):
 
 ## 5. Config reference addition
 
-Only the registration block of §4.1. No other `config.yaml` change.
+Two additions to `config.yaml`:
+
+1. The registration block of §4.1 (`litellm_settings.callbacks`).
+2. `model_info.metadata.reasoning_dialect` on every reasoning-capable
+   `model_list` entry (§4.3 primary classification) — see
+   `config.yaml.example`.
+
+No other change.
 
 ## 6. Acceptance criteria (definition of done)
 
@@ -292,9 +305,10 @@ Only the registration block of §4.1. No other `config.yaml` change.
 
 Pure-function checks in the repo venv (stdlib only):
 
-1. Classification: model→route via a fixture `ROUTE_MAP`
-   (`deepseek/...` → `deepseek`, `openrouter/...` → `baidu/fp8`, unknown →
-   no-op).
+1. Classification via fixture `DIALECT_MAP`/`ROUTE_MAP`: a declared dialect
+   wins (`deepseek/...` → native-bound, `openrouter/...` → OR-bound),
+   route-label fallback for entries without a declaration, unknown model or
+   unrecognized declared dialect → no-op.
 2. §4.4 rule 1 (disabled → object OFF + cleanup) and rule 1b (enabled →
    drop thinking); before/after byte-exact vs the examples.
 3. §4.5 OFF and ON translations incl. the vocabulary table rows.
@@ -330,8 +344,10 @@ Reuse `probes/` conventions (`probes/reasoning_format_tolerance.py` with
 
 - **Pre-call hook ordering** in v1.99.0: confirm with one DEBUG log in the
   adapter that `data["model"]` is the rerouted name (time_router first in
-  `callbacks`). If the alias model appears un-rewritten, `ROUTE_MAP` lookup
-  decides (no-op unless the alias carries a route label).
+  `callbacks`). If the alias model appears un-rewritten, the `DIALECT_MAP`
+  lookup decides — the alias entry in `config.yaml.example` declares
+  `reasoning_dialect: "openrouter"` (its default deployment), so OR rules
+  would apply.
 - **Fallback re-execution** (§6.2 item 5): whether `async_pre_call_hook`
   runs again per fallback attempt is not assumed. Live path: pi configured
   against the gateway with model `deepseek/deepseek-v4-flash` (§1.2). When

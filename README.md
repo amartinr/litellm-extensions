@@ -113,8 +113,9 @@ OpenRouter route, that dialect is mishandled: OR ignores `thinking` (a
 `reasoning` object. `reasoning_route_adapter.py` (registered AFTER
 `time_router` in `callbacks`, since it classifies by the rerouted model)
 normalizes the payload to the dialect of the bound route - see `DESIGN.md`
-for the rules, evidence and acceptance criteria; `test_reasoning_route_adapter.py`
-runs the offline acceptance checks offline (stdlib only, no network).
+for the rules, evidence and acceptance criteria;
+`tests/test_reasoning_route_adapter.py` runs the offline acceptance checks
+(stdlib only, no network).
 
 The peak-hour fix couples two changes that deploy together (DESIGN.md §9):
 pi must emit the native kill switch (`compat.thinkingFormat: "deepseek"` in
