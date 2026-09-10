@@ -1,8 +1,8 @@
-# LiteLLM TimeRouter Hook
+# LiteLLM Hooks — `time_router` and `reasoning_route_adapter`
 
-Custom pre-call hook (`CustomLogger`) for a LiteLLM proxy. Deployed at
-`/app/time_router.py` inside the `litellm` container (v1.99.0, no database,
-static `config.yaml`).
+Two custom pre-call hooks (`CustomLogger`) for a LiteLLM proxy (v1.99.0, no
+database, static `config.yaml`). Deployed as `/app/time_router.py` and
+`/app/reasoning_route_adapter.py` inside the `litellm` container.
 
 ## Behavior
 
@@ -21,13 +21,15 @@ For the alias `litellm/deepseek-v4-flash`:
    - Idle beyond `SESSION_IDLE_TTL_S` (default 900 s) → pin dropped, routing
      re-evaluates by the clock.
    - Requests without a session id fall back to stateless hour-based routing.
-3. **Route labeling** - every request is stamped with the config-declared route
-   (`model_info.metadata.route` from `config.yaml`, via `ROUTE_MAP`) so the Prometheus
-   exporter surfaces it as the `metadata_route` label. Label propagation requires the
-   value in `metadata.requester_metadata` / `metadata.spend_logs_metadata` (top-level
-   `metadata.route` is dropped by LiteLLM's standard-logging whitelist).
+3. **Route labeling** - requests for the alias target and for any model in
+   `ROUTE_MAP` are stamped with the config-declared route
+   (`model_info.metadata.route` from `config.yaml`), which the Prometheus
+   exporter surfaces as the `metadata_route` label. The value must be written
+   to `metadata.requester_metadata` / `metadata.spend_logs_metadata`
+   (top-level `metadata.route` is dropped by LiteLLM's standard-logging
+   whitelist). Unlisted models receive no label.
 
-Direct calls to any model listed in `ROUTE_MAP` are labeled (no rerouting).
+Direct calls to a model in `ROUTE_MAP` are labeled without rerouting.
 
 ## Scope
 
@@ -65,12 +67,15 @@ so body-level stamping never reaches the pipe's outbound payload.
 
 ## Configuration
 
-`config.yaml` — no changes required to run the hook beyond registration (see
-[`config.yaml.example`](config.yaml.example) for a full reference with the required
-`model_info.metadata.route` entries). Keys are referenced as `os.environ/...`.
+`config.yaml` — beyond registration, no changes are required (see
+[`config.yaml.example`](config.yaml.example) for the required
+`model_info.metadata.route` and `model_info.metadata.reasoning_dialect`
+entries). Keys are referenced as `os.environ/...`.
 
-The hook is registered under `litellm_settings.callbacks`
-(`time_router.proxy_handler_instance`); header normalization is built into LiteLLM.
+Both hooks are registered under `litellm_settings.callbacks`
+(`time_router.proxy_handler_instance`, then
+`reasoning_route_adapter.proxy_handler_instance`). Header normalization is
+built into LiteLLM.
 
 ### Environment
 
@@ -81,7 +86,10 @@ Required (see [`.env.example`](.env.example)):
 | `LITELLM_MASTER_KEY` | Admin key. Required by the proxy; with a DB-less setup every client authenticates with it |
 | `DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY` | Provider keys used by `config.yaml.example` (`os.environ/...` references) |
 
-Hook knobs (optional):
+`LITELLM_CONFIG_FILE` (both hooks) overrides the config path; the default
+search order is `/app/config.yaml`, then `./config.yaml`.
+
+`time_router` knobs (optional):
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -90,27 +98,39 @@ Hook knobs (optional):
 | `TIME_ROUTER_FAKE_HOUR` | unset | Override UTC hour (testing window boundaries) |
 | `TIME_ROUTER_FAKE_WEEKDAY` | unset | Override weekday, 0=Mon..6=Sun (testing weekends) |
 
+`reasoning_route_adapter` knobs (optional):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `REASONING_ADAPTER_DISABLED` | unset | `1` disables normalization (rollback) |
+| `REASONING_ADAPTER_DEBUG` | unset | Verbose logging, including before/after reasoning keys |
+| `REASONING_ADAPTER_NATIVE_ROUTES` | `deepseek` | Route labels classified as native-bound (fallback only) |
+| `REASONING_ADAPTER_OR_ROUTES` | `baidu/fp8` | Route labels classified as OR-bound (fallback only) |
+
 ## Logging
 
 All hook logs go through LiteLLM's `verbose_proxy_logger` and therefore match the
-proxy's JSON log format when `json_logs: true`. The `STICKY` line is always emitted
+proxy's JSON log format when `json_logs: true`. `time_router` always emits `STICKY`
 when an active session crosses a boundary and the pin overrides the clock.
+`reasoning_route_adapter` logs one line per applied transformation
+(`ReasoningAdapter: model=... route=... action=...`).
 
 ## Deployment
 
-The hook is imported by LiteLLM as the module `time_router`, so it must live in the
-same directory as `config.yaml` (the proxy working directory). In Docker that is
-`/app` - mount the file there (e.g. `-v ./time_router.py:/app/time_router.py`) and
-restart the container after changes.
+Both hooks are imported by LiteLLM as the modules `time_router` and
+`reasoning_route_adapter`, so both files must live in the same directory as
+`config.yaml` (the proxy working directory). In Docker that is `/app` — mount
+both files there and restart the container after changes.
 
 ## Companion hook — `reasoning_route_adapter`
 
-Clients (Open WebUI and pi, via their extensions) always send the
-DeepSeek-native reasoning dialect (root `thinking`/`reasoning_effort`,
-`reasoning_content` on assistant messages). When such traffic lands on the
-OpenRouter route, that dialect is mishandled: OR ignores `thinking` (a
-`thinking:{type:"disabled"}` still reasons and bills) and only honors its own
-`reasoning` object. `reasoning_route_adapter.py` (registered AFTER
+Clients (Open WebUI and pi, via their extensions) send the DeepSeek-native
+reasoning dialect on requests that carry reasoning control (root
+`thinking`/`reasoning_effort`, `reasoning_content` on assistant messages).
+On the OpenRouter route, OR ignores `thinking` (`thinking:{type:"disabled"}`
+still reasons and bills); it honors its own `reasoning` object and the root
+`reasoning_effort` (effort level only). `reasoning_route_adapter.py`
+(registered AFTER
 `time_router` in `callbacks`, since it classifies by the rerouted model)
 normalizes the payload to the dialect of the bound route - see `DESIGN.md`
 for the rules, evidence and acceptance criteria;

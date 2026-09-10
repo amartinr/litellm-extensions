@@ -58,14 +58,15 @@ rule was set; see git history):
 2. **Reasoning on Baidu is always exercised at effort `low`** (credit budget).
    Override only for a native-DeepSeek comparison run: `LITELLM_EFFORT=...`.
 3. **No cross-provider histories.** Every test starts and ends with ONE
-   provider. Default target: `openrouter/deepseek-v4-flash` (LiteLLM alias →
-   OR `deepseek-v4-flash-0731` → Baidu fp8, `provider.order: ["baidu/fp8"]`,
-   no fallbacks). The native route (`deepseek/deepseek-v4-flash`, direct
-   API) is a comparison baseline only, via `LITELLM_MODEL` — a comparison
-   run still uses a single provider throughout.
+   provider. Default target: the `openrouter/deepseek-v4-flash` deployment
+   (OR `deepseek-v4-flash-0731` → Baidu fp8, `provider.order: ["baidu/fp8"]`,
+   no fallbacks). It is called directly, not through the alias, so
+   `time_router` is bypassed. The native route
+   (`deepseek/deepseek-v4-flash`, direct API) is a comparison baseline only,
+   via `LITELLM_MODEL`; a comparison run still uses a single provider.
 4. **Small, precise probes.** Short prompts, `max_tokens` capped (256), no
-   streaming. Full default run ≈ 11 requests ≈ well under one cent on the
-   OpenRouter route.
+   streaming. Full default run (probes 1, 2, 3) = 13 requests, well under one
+   cent on the OpenRouter route.
 
 ## Setup
 

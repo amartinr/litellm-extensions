@@ -2,15 +2,13 @@
 
 Status: implemented (offline acceptance green, 16/16 in
 `tests/test_reasoning_route_adapter.py`, stdlib-only venv); live checks of
-section 6.2 pending gateway deployment.
-Branch: `main` (repo `litellm-extensions`)
-Reference code to mirror: `time_router.py` (module layout, config loading,
-logging, registration). Live evidence: `probes/` (2026-09-08) and the
-results recorded in `probes/README.md`.
+§6.2 pending gateway deployment.
+Branch: `main` (repo `litellm-extensions`).
+Reference code: `time_router.py` (module layout, config loading, logging,
+registration). Live evidence: `probes/` and `probes/README.md`.
 
-This document is self-contained: an agent without session context must be
-able to implement `reasoning_route_adapter.py` from it alone. Where a
-decision depends on evidence, the evidence and its source are cited.
+Self-contained specification for `reasoning_route_adapter.py`. Decisions
+that depend on evidence cite the source.
 
 ---
 
@@ -32,7 +30,7 @@ stickiness. `router_settings.fallbacks` can also redirect
 `deepseek/deepseek-v4-flash` → `openrouter/deepseek-v4-flash` after a
 failure.
 
-### 1.2 Client contract (assumption — read first)
+### 1.2 Client contract (assumption)
 
 Both current LiteLLM clients (Open WebUI and pi) run an extension that
 formats their DeepSeek requests to the **DeepSeek-native dialect** — the raw
@@ -191,7 +189,7 @@ adapter reads/mutates only:
 
 Presence semantics: absent key → not sent. `data["thinking"]` and
 `data["reasoning"]` may coexist (dual-spelling clients); the adapter makes
-them consistent per route (see 4.5).
+them consistent per route (see 4.4, 4.5).
 
 ### 4.3 Route classification
 
@@ -223,8 +221,8 @@ request dict, in order:
      `reasoning = {"enabled": false, "effort": "none"}`; delete `thinking`;
      delete `reasoning_effort` if present. (OR ignores `thinking`, row 1;
      object OFF is its documented contract, row 2.)
-   - `thinking.type == "enabled"` → delete `thinking` only (OR ignores it;
-     thinking is the provider default anyway; never synthesize an object —
+   - any other `thinking.type`, including `"enabled"` → delete `thinking`
+     only (OR ignores it; reasoning defaults ON; never synthesize an object —
      rows 3–4).
 2. `reasoning` present → leave as-is (already OR dialect).
 3. Root `reasoning_effort` present (no `thinking`) → leave as-is (cheap on
@@ -278,8 +276,8 @@ Example (probe/future client with OR object, OFF, native route):
 ### 4.6 Execution rules
 
 - `REASONING_ADAPTER_DISABLED=1` (env) → return `data` unchanged (rollback).
-- Fail-open: wrap in `try/except`; on exception log once (rate-limited, copy
-  `time_router._rate_limited_warning`) and return `data` unchanged.
+- Fail-open: wrap in `try/except`; on exception emit a warning at most once
+  per 5 min (`_rate_limited_warning`) and return `data` unchanged.
 - Idempotent: re-running over an already-normalized payload is a no-op
   (check rules: `thinking` gone, `reasoning` set → no further change).
 - `data` keys are deleted with `data.pop(key, None)`; values set in place.
@@ -309,15 +307,16 @@ Pure-function checks in the repo venv (stdlib only):
    wins (`deepseek/...` → native-bound, `openrouter/...` → OR-bound),
    route-label fallback for entries without a declaration, unknown model or
    unrecognized declared dialect → no-op.
-2. §4.4 rule 1 (disabled → object OFF + cleanup) and rule 1b (enabled →
-   drop thinking); before/after byte-exact vs the examples.
+2. §4.4 rule 1: disabled → object OFF + cleanup; other types → drop
+   thinking. Before/after byte-exact vs the examples.
 3. §4.5 OFF and ON translations incl. the vocabulary table rows.
 4. Idempotency: applying twice → second is a no-op (returns unchanged, no
    log).
 5. Fail-open: malformed values (e.g. `thinking: "junk"`) → unchanged data,
    no exception.
-6. Native-dialect payloads (thinking/root, no object) pass through
-   byte-identical on both routes.
+6. Native-dialect payloads without an object (root `reasoning_effort`, and
+   `thinking` on the native route) pass through byte-identical. On the OR
+   route `thinking` is normalized per §4.4 rule 1 and is excluded.
 7. `messages` untouched in every case.
 
 ### 6.2 Live (gateway, one provider per test; key from env, effort low)

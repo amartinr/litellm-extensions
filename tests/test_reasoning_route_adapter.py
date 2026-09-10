@@ -192,7 +192,7 @@ def test_or_kill_switch_rescue():
 
 
 def test_or_drop_thinking_enabled():
-    """DESIGN 4.4 rule 1b: thinking enabled -> drop only (never synthesize ON)."""
+    """DESIGN 4.4 rule 1: non-disabled thinking -> drop only (never synthesize ON)."""
     out = _run(_payload(OR_MODEL, thinking={"type": "enabled"}))
     eq("or drop enabled", out, _payload(OR_MODEL))
     true("or drop logged",
