@@ -14,9 +14,11 @@
 #   - keys are referenced as os.environ/... (see .env.example)
 #
 # The hooks are imported as the modules `time_router` and
-# `reasoning_route_adapter` (files next to this one) and registered under
-# litellm_settings.callbacks - ORDER MATTERS: time_router first (reroutes the
-# alias), then reasoning_route_adapter (normalizes by the rerouted model).
+# `reasoning_route_adapter` (source under `time_router/` and
+# `reasoning_route_adapter/`; both must be mounted next to this config at
+# `/app/`) and registered under litellm_settings.callbacks - ORDER MATTERS:
+# time_router first (reroutes the alias), then reasoning_route_adapter
+# (normalizes by the rerouted model).
 
 model_list:
   # Public alias - the only model clients should use. Default deployment points at

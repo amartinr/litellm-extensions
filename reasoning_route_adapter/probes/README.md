@@ -87,11 +87,11 @@ expectation; `UNEXPECTED` means the endpoint drifted from it.
 | `off` | `reasoning:{enabled:false, effort:"none"}` | no | contract form, OFF (both keys sent) |
 
 ```bash
-.venv/bin/python probes/reasoning_format_tolerance.py            # OR → Baidu
+.venv/bin/python reasoning_route_adapter/probes/reasoning_format_tolerance.py            # OR → Baidu
 # comparison baseline (same legs, native route, single provider):
-LITELLM_MODEL=deepseek/deepseek-v4-flash .venv/bin/python probes/reasoning_format_tolerance.py
+LITELLM_MODEL=deepseek/deepseek-v4-flash .venv/bin/python reasoning_route_adapter/probes/reasoning_format_tolerance.py
 # rerun only some legs (economize):
-.venv/bin/python probes/reasoning_format_tolerance.py off
+.venv/bin/python reasoning_route_adapter/probes/reasoning_format_tolerance.py off
 ```
 
 ## Probe 2 — `tool_replay_tolerance.py`
@@ -112,8 +112,8 @@ with backoff and reported separately — they are provider availability issues,
 not format verdicts.
 
 ```bash
-.venv/bin/python probes/tool_replay_tolerance.py [rounds=2]                 # OR → Baidu
-LITELLM_MODEL=deepseek/deepseek-v4-flash .venv/bin/python probes/tool_replay_tolerance.py [rounds=2]
+.venv/bin/python reasoning_route_adapter/probes/tool_replay_tolerance.py [rounds=2]                 # OR → Baidu
+LITELLM_MODEL=deepseek/deepseek-v4-flash .venv/bin/python reasoning_route_adapter/probes/tool_replay_tolerance.py [rounds=2]
 ```
 
 ## Probe 3 — `reasoning_response_field.py`
@@ -126,8 +126,8 @@ under `reasoning_content`. Two legs per run - `nostream` (message fields)
 and `stream` (delta fields, what pi actually parses):
 
 ```bash
-.venv/bin/python probes/reasoning_response_field.py            # OR → Baidu
-LITELLM_MODEL=deepseek/deepseek-v4-flash .venv/bin/python probes/reasoning_response_field.py
+.venv/bin/python reasoning_route_adapter/probes/reasoning_response_field.py            # OR → Baidu
+LITELLM_MODEL=deepseek/deepseek-v4-flash .venv/bin/python reasoning_route_adapter/probes/reasoning_response_field.py
 ```
 
 `UNEXPECTED` = the canonical OR `reasoning` field carries the reasoning

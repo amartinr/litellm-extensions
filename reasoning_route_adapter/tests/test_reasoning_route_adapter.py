@@ -3,12 +3,12 @@
 
 Stdlib only - runs in the repo venv with no network, no keys, no litellm:
 
-    .venv/bin/python tests/test_reasoning_route_adapter.py
+    .venv/bin/python reasoning_route_adapter/tests/test_reasoning_route_adapter.py
 
 The module under test imports `yaml` and `litellm.integrations.custom_logger`
-at module level (same layout as time_router.py), so both are stubbed in
+at module level (same layout as `time_router`), so both are stubbed in
 sys.modules before the import; the real proxy provides them. ROUTE_MAP and
-DIALECT_MAP are overridden with fixtures mirroring config.yaml.example:
+DIALECT_MAP are overridden with fixtures mirroring `../config.yaml.example`:
 every reasoning-capable entry declares model_info.metadata.reasoning_dialect
 (the alias entry declares "openrouter" - its default deployment is OR); one
 fixture entry has only a route label (fallback path) and one declares an
@@ -23,8 +23,8 @@ import sys
 import types
 from pathlib import Path
 
-# The module under test lives at the repo root; running this file from
-# tests/ puts tests/ on sys.path, so prepend the repo root explicitly.
+# The module under test lives in the parent directory (the hook dir); running
+# this file from tests/ puts tests/ on sys.path, so prepend the hook dir.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT))
 

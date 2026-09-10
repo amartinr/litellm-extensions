@@ -4,7 +4,7 @@ Status: implemented (offline acceptance green, 16/16 in
 `tests/test_reasoning_route_adapter.py`, stdlib-only venv); live checks of
 §6.2 pending gateway deployment.
 Branch: `main` (repo `litellm-extensions`).
-Reference code: `time_router.py` (module layout, config loading, logging,
+Reference code: `../time_router/time_router.py` (module layout, config loading, logging,
 registration). Live evidence: `probes/` and `probes/README.md`.
 
 Self-contained specification for `reasoning_route_adapter.py`. Decisions
@@ -24,7 +24,7 @@ DeepSeek models through two upstreams with different reasoning dialects:
 | Native DeepSeek (`api.deepseek.com/v1`) | `deepseek/deepseek-v4-flash`, `deepseek/deepseek-v4-pro` | `thinking: {type: enabled\|disabled}` + root `reasoning_effort: low\|high\|max` | `reasoning_content` (required on every assistant message of a tool-calling history; missing → 400 on the raw API) |
 | OpenRouter (Baidu fp8) | `openrouter/deepseek-v4-flash` (upstream `deepseek/deepseek-v4-flash-0731`, `provider.order: ["baidu/fp8"]`) | OR object `reasoning: {enabled, effort}` (per-model metadata: `supported_efforts ["max","high","low"]`, `default_effort "high"`, `mandatory false`) | `reasoning` (canonical) or `reasoning_content` (documented alias, "functions identically") |
 
-`time_router.py` (pre-call hook, registered first) reroutes the public alias
+The `time_router` hook (pre-call, registered first) reroutes the public alias
 `litellm/deepseek-v4-flash` to one of the two upstreams by clock and session
 stickiness. `router_settings.fallbacks` can also redirect
 `deepseek/deepseek-v4-flash` → `openrouter/deepseek-v4-flash` after a
@@ -149,8 +149,9 @@ Derived rules (do not deviate without new evidence):
 
 ### 4.1 Layout and registration
 
-File at repo root (mounted at `/app/` next to `config.yaml` and
-`time_router.py`). Mirror `time_router.py`:
+`reasoning_route_adapter/reasoning_route_adapter.py`, mounted at
+`/app/reasoning_route_adapter.py` next to `config.yaml` and the
+`time_router` module. Mirror `../time_router/time_router.py`:
 
 - `CONFIG_PATHS` and module-level `ROUTE_MAP` (`model_name → route`) and
   `DIALECT_MAP` (`model_name → reasoning_dialect`), built in one pass from
@@ -293,7 +294,7 @@ Two additions to `config.yaml`:
 1. The registration block of §4.1 (`litellm_settings.callbacks`).
 2. `model_info.metadata.reasoning_dialect` on every reasoning-capable
    `model_list` entry (§4.3 primary classification) — see
-   `config.yaml.example`.
+   `../config.yaml.example`.
 
 No other change.
 
@@ -344,7 +345,7 @@ Reuse `probes/` conventions (`probes/reasoning_format_tolerance.py` with
 - **Pre-call hook ordering** in v1.99.0: confirm with one DEBUG log in the
   adapter that `data["model"]` is the rerouted name (time_router first in
   `callbacks`). If the alias model appears un-rewritten, the `DIALECT_MAP`
-  lookup decides — the alias entry in `config.yaml.example` declares
+  lookup decides — the alias entry in `../config.yaml.example` declares
   `reasoning_dialect: "openrouter"` (its default deployment), so OR rules
   would apply.
 - **Fallback re-execution** (§6.2 item 5): whether `async_pre_call_hook`

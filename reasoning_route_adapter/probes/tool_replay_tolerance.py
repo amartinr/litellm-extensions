@@ -45,8 +45,8 @@ Constraints
 
 Usage
 -----
-    .venv/bin/python probes/tool_replay_tolerance.py [rounds=2]
-    LITELLM_MODEL=deepseek/deepseek-v4-flash .venv/bin/python probes/tool_replay_tolerance.py [rounds=2]
+    .venv/bin/python reasoning_route_adapter/probes/tool_replay_tolerance.py [rounds=2]
+    LITELLM_MODEL=deepseek/deepseek-v4-flash .venv/bin/python reasoning_route_adapter/probes/tool_replay_tolerance.py [rounds=2]
 
 Cost
 ----

@@ -15,7 +15,7 @@ OR route. This probe watches for drift: if the gateway/OR start delivering
 the reasoning under the canonical `reasoning` field instead, pi would store
 a `reasoning` signature and replay under the wrong field on the next
 request — native tolerates the stray field without a 4xx but drops its
-content (ad-hoc check 2026-09-09, n=1; see probes/README Results).
+content (ad-hoc check 2026-09-09, n=1; see probes/README.md Results).
 
 Contract expectation
 --------------------
@@ -39,7 +39,7 @@ Constraints
 
 Usage
 -----
-    .venv/bin/python probes/reasoning_response_field.py [nostream|stream]
+    .venv/bin/python reasoning_route_adapter/probes/reasoning_response_field.py [nostream|stream]
 """
 
 import json

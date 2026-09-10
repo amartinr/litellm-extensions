@@ -46,10 +46,10 @@ Constraints
 
 Usage
 -----
-    .venv/bin/python probes/reasoning_format_tolerance.py [leg ...]
+    .venv/bin/python reasoning_route_adapter/probes/reasoning_format_tolerance.py [leg ...]
     # default = all legs (3 requests); pass leg ids for a subset:
-    .venv/bin/python probes/reasoning_format_tolerance.py off
-    LITELLM_MODEL=deepseek/deepseek-v4-flash .venv/bin/python probes/....py
+    .venv/bin/python reasoning_route_adapter/probes/reasoning_format_tolerance.py off
+    LITELLM_MODEL=deepseek/deepseek-v4-flash .venv/bin/python reasoning_route_adapter/probes/....py
 
 Cost
 ----
