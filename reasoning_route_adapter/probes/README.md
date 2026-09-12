@@ -232,3 +232,37 @@ the gateway, but its content is silently dropped - the weakest continuation.
 n=1; only the status is a clean verdict. If the response field ever drifts
 to `reasoning` (monitored by probe 3), the replay would degrade this way
 until the extension (or a field mapping) restores `reasoning_content`.
+
+## Probe 4 — `gateway_contract.py` (per-deployment adapter)
+
+Live check that the adapter, now on `async_pre_call_deployment_hook`,
+classifies the **bound deployment** and normalizes end-to-end. Four legs, one
+request each; a per-request nonce in the prompt avoids any gateway response
+cache:
+
+| leg | model | body | expected |
+|---|---|---|---|
+| `or_off` | `openrouter/deepseek-v4-flash` | `thinking:{type:disabled}` | 0 reasoning tokens (rescued) |
+| `or_default` | `openrouter/deepseek-v4-flash` | *(none)* | reasons |
+| `native_off` | `deepseek/deepseek-v4-flash` | `thinking:{type:disabled}` | 0 reasoning tokens (native honors) |
+| `native_default` | `deepseek/deepseek-v4-flash` | *(none)* | reasons |
+
+The `or_off` leg also proves the bound deployment's `model_info.metadata` /
+`deployment_model_name` reaches the hook (DESIGN §4.2/§4.3): if classification
+failed, OR would reason and bill.
+
+Env-driven; nothing infrastructure-specific is stored:
+
+```bash
+LITELLM_SPEND_LOGS_METADATA='{...}' .venv-test/bin/python \
+    reasoning_route_adapter/probes/gateway_contract.py
+```
+
+Result (2026-09-12, shared gateway): **4/4 PASS**. `or_off` 0 reasoning
+tokens; `native_off` 0; defaults reasoned (50-87 tokens).
+
+Not covered: the fallback path (native failure -> OR). Forcing it needs
+`general_settings.dangerously_allow_mock_testing_request_params` (off on the
+shared gateway), a broken primary, or a real provider failure; the per-attempt
+re-normalization is covered offline by
+`tests/test_reasoning_route_adapter.py::test_fallback_attempt_renormalizes`.

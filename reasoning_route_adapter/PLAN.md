@@ -29,8 +29,12 @@ unrecognized types instead of silently dropping.
 
 ## P2 — Live acceptance §6.2
 
-Run the gateway checks in `DESIGN.md` §6.2 after deployment: OR kill switch → 0
-tokens, native object OFF → 0 tokens, native object ON → low-range, regression
-against `REASONING_ADAPTER_DISABLED=1`, and the fallback path (the
-per-deployment hook must rescue `thinking:disabled` when the router falls back
-to OR). Env-gated; see the root README "Retries and fallback".
+Normal path verified (probe 4, `probes/gateway_contract.py`, 4/4): OR +
+`thinking:disabled` → 0 tokens (the deployed adapter rescues via the bound
+deployment), native + `thinking:disabled` → 0 tokens, defaults reason.
+
+Still to run: native OR-object OFF → 0 tokens; native OR-object ON →
+low-range; regression against `REASONING_ADAPTER_DISABLED=1`; and the fallback
+path (native failure → OR), which needs
+`general_settings.dangerously_allow_mock_testing_request_params` or a broken
+primary (see `probes/README.md` probe 4).
