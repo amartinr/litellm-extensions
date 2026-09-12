@@ -10,8 +10,21 @@
 #     reasoning_content) or "openrouter" (the reasoning object).
 #     reasoning_route_adapter classifies by it (the route-label sets in the
 #     hook are only the fallback for entries without the declaration)
+#   - the alias entry declares model_info.metadata.time_router.reroute
+#     (peak_target / offpeak_target); the offpeak_target entry owns the
+#     provider schedule model_info.metadata.time_router.peak_windows
+#     (days 0=Mon..6=Sun, start/end as HH:MM UTC, interval [start, end))
+#   - hook operation knobs live in the top-level callback_settings.<hook>
+#     block - NOT litellm_settings.callback_settings; each hook reads its own
+#     entry (LiteLLM does not inject it into a dotted-path CustomLogger)
 #   - the alias entry in model_list is the only name clients know
 #   - keys are referenced as os.environ/... (see .env.example)
+#
+# PENDING (see PLAN.md): the config-driven targets/windows, the shared
+# hook_config loader and the per-deployment adapter hook are not implemented
+# yet. Until they land the hook code still uses its module constants, so the
+# time_router metadata and callback_settings below are inert (the metadata is
+# ignored and the callback_settings block is loaded but not read by the hooks).
 #
 # The hooks are imported as the modules `time_router` and
 # `reasoning_route_adapter` (source under `time_router/` and
@@ -38,6 +51,10 @@ model_list:
         reasoning_dialect: "openrouter"  # alias default deployment is OR; if it
                                         # ever reaches the adapter un-rewritten,
                                         # the OR rules apply
+        time_router:
+          reroute:
+            peak_target: "openrouter/deepseek-v4-flash"
+            offpeak_target: "deepseek/deepseek-v4-flash"
 
   # Off-peak target (deepseek direct API).
   - model_name: deepseek/deepseek-v4-flash
@@ -54,6 +71,14 @@ model_list:
       metadata:
         route: "deepseek"
         reasoning_dialect: "deepseek"
+        time_router:
+          peak_windows:                 # days 0=Mon..6=Sun (datetime.weekday());
+            - days: [0, 1, 2, 3, 4]     # start/end are HH:MM UTC, [start, end).
+              start: "01:00"            # weekend excluded by omission.
+              end: "04:00"
+            - days: [0, 1, 2, 3, 4]
+              start: "06:00"
+              end: "10:00"
 
   # Peak target (via OpenRouter -> Baidu Qianfan).
   - model_name: openrouter/deepseek-v4-flash
@@ -97,6 +122,19 @@ general_settings:
   max_parallel_requests: 4
   global_max_parallel_requests: 8
   background_health_checks: false
+
+# Hook operation knobs. TOP-LEVEL key (v1.99.0 reads config.get("callback_settings")),
+# NOT litellm_settings.callback_settings. A CustomLogger registered by dotted
+# path does not receive its block automatically, so each hook reads its own
+# entry (see PLAN.md / DESIGN.md §5.1).
+callback_settings:
+  time_router:
+    session_ttl_s: 900
+    max_session_entries: 128
+  reasoning_route_adapter:
+    warning_interval_s: 300
+    native_route_labels: ["deepseek"]
+    or_route_labels: ["baidu/fp8"]
 
 litellm_settings:
   callbacks:

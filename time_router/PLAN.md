@@ -41,9 +41,9 @@ model_list:
         route: "deepseek"
         reasoning_dialect: "deepseek"
         time_router:
-          peak_windows_utc:          # 0=Mon..6=Sun (datetime.weekday())
+          peak_windows:              # days 0=Mon..6=Sun (datetime.weekday())
             - days: [0, 1, 2, 3, 4]  # weekend excluded by omission
-              start: "01:00"         # interval is [start, end), UTC
+              start: "01:00"         # start/end are HH:MM UTC, interval [start, end)
               end: "04:00"
             - days: [0, 1, 2, 3, 4]
               start: "06:00"
@@ -62,8 +62,10 @@ Resolution rules (implement exactly):
 - The peak schedule is read from the entry named by `offpeak_target`
   (`deepseek/deepseek-v4-flash`), the entry that owns the native-provider
   fact — not from the alias and not from the hook.
-- `route = peak_target if is_peak(now) else offpeak_target`; weekends
-  disappear by omission (the `weekday >= 5` branch is removed).
+- `route = peak_target if is_peak(now) else offpeak_target`; `start`/`end`
+  are `HH:MM` **UTC** with interval `[start, end)` (start inclusive, end
+  exclusive); weekends disappear by omission (the `weekday >= 5` branch is
+  removed).
 - `PEAK_TARGET` / `OFFPEAK_TARGET` literals are removed.
 
 ## Configuration error policy
@@ -71,7 +73,7 @@ Resolution rules (implement exactly):
 - Unreadable / invalid YAML → empty descriptors; the hook no-ops; log once at
   ERROR. A hook config problem never aborts proxy startup.
 - Parseable but semantically invalid routing config (target not in
-  `model_list`, `offpeak_target` without `peak_windows_utc`, malformed
+  `model_list`, `offpeak_target` without `peak_windows`, malformed
   window) → do not reroute (leave `data["model"]` untouched), and log an
   ERROR at load listing every problem. Never emit an invalid model and never
   the `route="unknown"` label.
@@ -119,8 +121,8 @@ See "Configuration target" and "Configuration error policy". Replaces the
 current P1 of the same name; also removes the hardcoded peak windows and the
 weekend branch. On load, assert that every `reroute.peak_target` /
 `offpeak_target` names an existing `model_list` entry, and that the
-`offpeak_target` entry declares non-empty `peak_windows_utc` with
-`days ⊆ 0..6`, `start`/`end` parseable `HH:MM`, and `start < end`.
+`offpeak_target` entry declares non-empty `peak_windows` with
+`days ⊆ 0..6`, `start`/`end` parseable `HH:MM` UTC, and `start < end`.
 
 ## P1 — Hook knobs from `callback_settings`
 

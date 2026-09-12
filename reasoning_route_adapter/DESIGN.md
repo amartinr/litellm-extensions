@@ -368,7 +368,7 @@ Error policy (never abort proxy startup):
 
 - unreadable / invalid YAML → `MODELS` empty, hooks no-op, one ERROR log;
 - parseable but semantically invalid `time_router` block (target missing,
-  `offpeak_target` without `peak_windows_utc`, malformed window) → reroute
+  `offpeak_target` without `peak_windows`, malformed window) → reroute
   disabled for that alias, ERROR per problem; never an invalid model and
   never `route="unknown"`;
 - invalid `callback_settings` value → documented default + ERROR.
@@ -440,6 +440,13 @@ Reuse `probes/` conventions (`probes/reasoning_format_tolerance.py` with
 - LiteLLM's own DeepSeek transformation (`transformation.py`, placeholder
   injection when `reasoning_content` is missing) is orthogonal: clients
   already carry the field (§1.3 row 5); no interaction expected.
+
+The timing of the fallback the per-deployment hook now covers is set by
+LiteLLM core retry/cooldown knobs (`litellm_params.num_retries` / `timeout`,
+`router_settings.allowed_fails` / `cooldown_time`), not by hook config — see
+the root `README.md` "Retries and fallback" section for defaults and effects.
+Non-retryable errors (400/401/403/404) fall back immediately; retryable ones
+(408/409/429/5xx) after `num_retries`.
 
 ## 8. Evidence references
 
