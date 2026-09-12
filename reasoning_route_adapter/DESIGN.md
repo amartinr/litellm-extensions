@@ -1,9 +1,8 @@
 # DESIGN — Reasoning-payload normalization at the LiteLLM gateway
 
-Status: implemented at request level (legacy stdlib test script, to be
-rewritten to pytest with real asserts). Pending: migrate to the per-deployment
-hook (§4.1, §7) and wire the shared `hook_config` loader (§5.2, already used by
-`time_router`). Live checks of §6.2 pending gateway deployment.
+Status: implemented on the per-deployment hook, wired to the shared
+`hook_config` loader; offline pytest green (38). Live checks of §6.2 pending
+gateway deployment.
 Branch: `main` (repo `litellm-extensions`).
 Reference code: `../time_router/time_router.py` (module layout, registration;
 config loading/logging via the shared `hook_config`, §5.2). Live evidence:
@@ -345,8 +344,7 @@ Registration is unchanged (§4.1).
 ### 5.2 Shared loader `hook_config.py`
 
 Implemented module (`hook_config.py`), mounted at `/app/hook_config.py` and
-imported as top-level `hook_config`. `time_router` uses it; this adapter wires
-it in during the P0 migration. API:
+imported as top-level `hook_config`; both hooks call it at module level. API:
 
 - `load(path=None)` — reads `config.yaml` and returns a `Loaded` with
   `.models` (`{model_name: {route, reasoning_dialect, time_router}}`) and
@@ -395,10 +393,9 @@ Pure-function checks in the repo venv (stdlib only):
    route `thinking` is normalized per §4.4 rule 1 and is excluded.
 7. `messages` untouched in every case.
 
-The module under test reads config via the shared loader (§5.2), so the
-offline harness stubs `hook_config` (a `Loaded` fixture) instead of
-`yaml`/`litellm`, and overrides `ROUTE_MAP`/`DIALECT_MAP` after import.
-Payloads are `kwargs`-shaped: a `model`, a metadata bucket carrying
+The offline tests use the real `hook_config` with a fixture `config.yaml`
+(`_load_config`) and monkeypatch `ROUTE_MAP`/`DIALECT_MAP` for isolated case
+tests. Payloads are `kwargs`-shaped: a `model`, a metadata bucket carrying
 `deployment_model_name` and `model_info.metadata.reasoning_dialect`, plus the
 root reasoning keys.
 

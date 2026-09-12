@@ -4,14 +4,15 @@ id: reasoning_route_adapter
 author: A. Martin
 author_url: https://github.com/amartinr
 description: >
-    LiteLLM custom pre-call hook (CustomLogger), registered AFTER
-    `time_router.proxy_handler_instance` in `litellm_settings.callbacks` so
-    `data["model"]` is the post-reroute model. It normalizes the reasoning
+    LiteLLM custom per-deployment hook (CustomLogger). Runs on
+    `async_pre_call_deployment_hook`, i.e. once per real deployment attempt
+    (original, retry, fallback step), after the router has selected the
+    deployment and before the request is sent. It normalizes the reasoning
     control of the request to the dialect that the bound route honors.
-    Route classification is config-driven: each model_list entry declares
+    Route classification is by the bound deployment: the deployment's
     `model_info.metadata.reasoning_dialect` ("deepseek" -> native-bound,
-    "openrouter" -> OR-bound); entries without the declaration fall back to
-    the route-label taxonomy below.
+    "openrouter" -> OR-bound); when absent, the `deployment_model_name` is
+    looked up in the config maps, then the route-label taxonomy.
     Clients (Open WebUI and pi, each with an extension) send the
     DeepSeek-native dialect - root keys `thinking:{type:enabled|disabled}` and
     `reasoning_effort` (the raw HTTP contract of api.deepseek.com, see its
@@ -43,15 +44,18 @@ description: >
         -> high, minimal -> low; unmappable -> omit the effort key).
 
     Never touches `messages`. Deterministic, idempotent (re-running over an
-    already-normalized payload is a no-op), fail-open (any error leaves the
-    request unchanged, warned at most once per 5 min), stateless, no I/O.
+    already-normalized payload is a no-op - relevant because the same kwargs is
+    reused across attempts), fail-open (any error leaves the request
+    unchanged, warned at most once per interval), stateless, no I/O.
     Rollback: REASONING_ADAPTER_DISABLED=1 (checked per request).
+    Config is read through the shared `hook_config` loader: per-model facts
+    from `model_info.metadata`, operation knobs from the top-level
+    `callback_settings.reasoning_route_adapter` block (warning_interval_s,
+    native_route_labels, or_route_labels).
     Env knobs: REASONING_ADAPTER_DEBUG (verbose logs incl. before/after
-    reasoning keys), REASONING_ADAPTER_NATIVE_ROUTES / REASONING_ADAPTER_OR_ROUTES
-    (comma-separated route-label sets, defaults deepseek / baidu/fp8 - only
-    the fallback taxonomy for entries without a declared dialect).
+    reasoning keys), REASONING_ADAPTER_DISABLED.
 required_litellm_version: 1.99.0
-version: 0.2.1
+version: 0.3.0
 licence: MIT
 """
 
@@ -59,33 +63,27 @@ import json as _json
 import os
 import time
 
-import yaml
+import hook_config
 from litellm.integrations.custom_logger import CustomLogger
 
-CONFIG_PATHS = [
-    os.environ.get("LITELLM_CONFIG_FILE", ""),   # env var wins if set
-    "/app/config.yaml",                          # real path
-    "./config.yaml",
-]
+# Populated by _load_config() at import and refreshed by tests/reloads.
+ROUTE_MAP: dict[str, str] = {}
+DIALECT_MAP: dict[str, str] = {}
+NATIVE_ROUTE_LABELS: set = {"deepseek"}
+OR_ROUTE_LABELS: set = {"baidu/fp8"}
+_WARNING_INTERVAL_S = 300.0
 
-# Fallback dialect taxonomy - used only for model_list entries that do NOT
-# declare model_info.metadata.reasoning_dialect in config.yaml (the declared
-# dialect is the primary classification source). A route label outside both
-# sets is treated as unknown -> no-op (extend via env if new labels appear).
-def _label_set(env_name: str, default: list) -> set:
-    raw = os.environ.get(env_name)
-    if raw:
-        return {part.strip() for part in raw.split(",") if part.strip()}
-    return set(default)
-
-
-NATIVE_ROUTE_LABELS = _label_set("REASONING_ADAPTER_NATIVE_ROUTES", ["deepseek"])
-OR_ROUTE_LABELS = _label_set("REASONING_ADAPTER_OR_ROUTES", ["baidu/fp8"])
+# Fallback taxonomy - used only for deployments that do NOT declare
+# model_info.metadata.reasoning_dialect (the declared dialect is the primary
+# classification source). A route label outside both sets is unknown -> no-op.
+# Defaults live in hook_config.SETTINGS_DEFAULTS; override via
+# callback_settings.reasoning_route_adapter.
 
 # OR-object effort -> native root `reasoning_effort`. DeepSeek's own collapse
 # table (low/medium/high/xhigh/max, identical for v4-flash and v4-pro, per
 # api-docs.deepseek.com/guides/thinking_mode) plus OR's "minimal" alias.
 # "none" is handled by the OFF branch. Unknown values -> omit the effort key.
+# Provider protocol fact, probe-backed: keep in code, do not move to config.
 EFFORT_MAP = {
     "low": "low",
     "medium": "high",
@@ -96,59 +94,29 @@ EFFORT_MAP = {
 }
 
 
-def _load_route_maps():
-    """Builds {model_name: route} and {model_name: reasoning_dialect} from
-    model_info.metadata of the model_list entries in config.yaml.
-
-    - route (same source as time_router): surfaces as the metadata_route
-      Prometheus label; the fallback taxonomy below keys on it.
-    - reasoning_dialect: the entry's reasoning wire contract - "deepseek"
-      (native thinking / reasoning_effort / reasoning_content) or
-      "openrouter" (reasoning object). Declared per entry in config.yaml;
-      the classifier prefers it over the route-label taxonomy.
-    """
-    for p in CONFIG_PATHS:
-        if p and os.path.exists(p):
-            with open(p) as f:
-                cfg = yaml.safe_load(f)
-            route_map = {}
-            dialect_map = {}
-            for m in (cfg.get("model_list") or []):
-                name = m.get("model_name")
-                if not name:
-                    continue
-                meta = (m.get("model_info") or {}).get("metadata") or {}
-                route = meta.get("route")
-                if route:
-                    route_map[name] = route
-                dialect = meta.get("reasoning_dialect")
-                if dialect:
-                    dialect_map[name] = dialect
-            return route_map, dialect_map
-    return {}, {}
+def _apply_config(loaded) -> None:
+    global ROUTE_MAP, DIALECT_MAP, NATIVE_ROUTE_LABELS, OR_ROUTE_LABELS, _WARNING_INTERVAL_S
+    ROUTE_MAP = {name: d["route"] for name, d in loaded.models.items() if d["route"]}
+    DIALECT_MAP = {name: d["reasoning_dialect"] for name, d in loaded.models.items() if d["reasoning_dialect"]}
+    settings = loaded.settings("reasoning_route_adapter")
+    NATIVE_ROUTE_LABELS = set(settings["native_route_labels"])
+    OR_ROUTE_LABELS = set(settings["or_route_labels"])
+    _WARNING_INTERVAL_S = settings["warning_interval_s"]
 
 
-ROUTE_MAP, DIALECT_MAP = _load_route_maps()
+def _load_config(path: str | None = None) -> None:
+    _apply_config(hook_config.load(path))
+
+
+_load_config()
 
 
 def _log():
-    """LiteLLM's proxy logger - emits JSON lines when `json_logs` is on.
-
-    Lazy import: the hook module is imported early by the proxy; importing
-    proxy_server at module level would risk an import cycle.
-    """
-    try:
-        from litellm.proxy.proxy_server import verbose_proxy_logger
-
-        return verbose_proxy_logger
-    except Exception:
-        from litellm import verbose_logger
-
-        return verbose_logger
+    """LiteLLM's proxy logger - shared loader handles the lazy import."""
+    return hook_config.get_logger()
 
 
 _last_warning_at = [0.0]
-_WARNING_INTERVAL_S = 300.0
 
 
 def _rate_limited_warning(msg: str, *args) -> None:
@@ -163,118 +131,157 @@ def _rate_limited_warning(msg: str, *args) -> None:
         pass
 
 
-class ReasoningRouteAdapter(CustomLogger):
-    """Normalizes reasoning control per the route bound in data["model"].
+def deployment_context(kwargs: dict) -> dict:
+    """Bound-deployment facts from the router metadata bucket.
 
-    The rules below are DESIGN.md sections 4.4 (OR-bound) and 4.5
-    (native-bound), evaluated on the request dict in the documented order.
+    LiteLLM exposes `model_info` and `deployment_model_name` under `metadata`
+    for most call types (and `litellm_metadata` for a few router methods), so
+    both buckets are checked. Returns `{"dialect", "route", "name"}`.
+    """
+    dialect = route = name = None
+    for bucket_name in ("metadata", "litellm_metadata"):
+        bucket = kwargs.get(bucket_name)
+        if not isinstance(bucket, dict):
+            continue
+        model_info = bucket.get("model_info")
+        meta = model_info.get("metadata") if isinstance(model_info, dict) else None
+        if isinstance(meta, dict):
+            dialect = meta.get("reasoning_dialect", dialect)
+            route = meta.get("route", route)
+        candidate = bucket.get("deployment_model_name")
+        if isinstance(candidate, str) and not name:
+            name = candidate
+    return {"dialect": dialect, "route": route, "name": name}
+
+
+class ReasoningRouteAdapter(CustomLogger):
+    """Normalizes reasoning control per the bound deployment.
+
+    The rules are DESIGN.md sections 4.4 (OR-bound) and 4.5 (native-bound),
+    evaluated on the request kwargs in the documented order.
     """
 
     # ------------------------------------------------------------------ classification
     @classmethod
-    def _classify(cls, model):
-        """(side, label) for a model, or None when unclassified.
+    def _classify(cls, context: dict):
+        """(side, label) for a bound deployment, or None when unclassified.
 
-        Primary source: the entry-declared `reasoning_dialect` from
-        config.yaml ("deepseek" -> native-bound rules, "openrouter" ->
-        OR-bound rules). Fallback for entries without the declaration: the
-        route-label taxonomy (NATIVE_ROUTE_LABELS / OR_ROUTE_LABELS). A
+        Primary source: the deployment's
+        `model_info.metadata.reasoning_dialect` ("deepseek" -> native-bound
+        rules, "openrouter" -> OR-bound rules). Fallback for deployments
+        without the declaration: `deployment_model_name` against
+        `DIALECT_MAP` / `ROUTE_MAP`, then the route-label taxonomy. A
         declared-but-unrecognized dialect is fail-open: no-op.
         """
-        if not isinstance(model, str):
-            return None
-        route = ROUTE_MAP.get(model)
-        dialect = DIALECT_MAP.get(model)
+        dialect = context.get("dialect")
+        route = context.get("route")
+        name = context.get("name")
+        label = route if isinstance(route, str) and route else name
+
         if dialect == "deepseek":
-            return ("native", route or dialect)
+            return ("native", label or dialect)
         if dialect == "openrouter":
-            return ("or", route or dialect)
+            return ("or", label or dialect)
         if dialect is not None:
             return None  # declared dialect outside the supported vocabulary
-        if route in OR_ROUTE_LABELS:
-            return ("or", route)
-        if route in NATIVE_ROUTE_LABELS:
-            return ("native", route)
-        return None  # model unlisted or route label in neither set -> no-op
+
+        if not isinstance(name, str):
+            return None
+        declared = DIALECT_MAP.get(name)
+        if declared == "deepseek":
+            return ("native", ROUTE_MAP.get(name) or declared)
+        if declared == "openrouter":
+            return ("or", ROUTE_MAP.get(name) or declared)
+        if declared is not None:
+            return None
+        label = ROUTE_MAP.get(name)
+        if label in OR_ROUTE_LABELS:
+            return ("or", label)
+        if label in NATIVE_ROUTE_LABELS:
+            return ("native", label)
+        return None  # unlisted deployment or route label in neither set -> no-op
 
     # ------------------------------------------------------------------ OR-bound rules (DESIGN 4.4)
     @staticmethod
-    def _normalize_or_bound(data: dict):
+    def _normalize_or_bound(kwargs: dict):
         """Make native-dialect control behave on OR. Returns an action name or None."""
-        thinking = data.get("thinking")
+        thinking = kwargs.get("thinking")
         if not isinstance(thinking, dict):
             return None  # OR object / root effort / nothing -> leave as-is
         if thinking.get("type") == "disabled":
             # OR ignores `thinking` (row 1 of DESIGN 1.3); the OR contract OFF
             # object is its documented kill switch (row 2).
-            data["reasoning"] = {"enabled": False, "effort": "none"}
-            data.pop("thinking", None)
-            data.pop("reasoning_effort", None)
+            kwargs["reasoning"] = {"enabled": False, "effort": "none"}
+            kwargs.pop("thinking", None)
+            kwargs.pop("reasoning_effort", None)
             return "kill_switch_rescue"
         # enabled (or any other type value): OR ignores `thinking` and defaults
         # to reasoning ON; drop it. Never synthesize an object for ON (rows 3-4).
-        data.pop("thinking", None)
+        kwargs.pop("thinking", None)
         return "drop_thinking"
 
     # ------------------------------------------------------------------ native-bound rules (DESIGN 4.5)
     @staticmethod
-    def _normalize_native(data: dict):
+    def _normalize_native(kwargs: dict):
         """Translate an incoming OR `reasoning` object into native dialect."""
-        reasoning = data.get("reasoning")
+        reasoning = kwargs.get("reasoning")
         if not isinstance(reasoning, dict):
             return None  # native dialect (thinking / root effort) -> pass through
         effort = reasoning.get("effort")
         if reasoning.get("enabled") is False or effort == "none":
-            data["thinking"] = {"type": "disabled"}
-            data.pop("reasoning", None)
-            data.pop("reasoning_effort", None)
+            kwargs["thinking"] = {"type": "disabled"}
+            kwargs.pop("reasoning", None)
+            kwargs.pop("reasoning_effort", None)
             return "object_to_native_off"
         if reasoning.get("enabled") is True:
             mapped = EFFORT_MAP.get(effort) if isinstance(effort, str) else None
-            data["thinking"] = {"type": "enabled"}
-            data.pop("reasoning", None)
+            kwargs["thinking"] = {"type": "enabled"}
+            kwargs.pop("reasoning", None)
             if mapped:
-                data["reasoning_effort"] = mapped
+                kwargs["reasoning_effort"] = mapped
             return "object_to_native_on"
         # enabled absent / not a bool -> outside the documented contract;
         # fail-open, leave unchanged.
         return None
 
     # ------------------------------------------------------------------ hook
-    async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
+    async def async_pre_call_deployment_hook(self, kwargs: dict, call_type):
+        """Runs per real deployment attempt; returns kwargs (or None-unchanged)."""
         if os.environ.get("REASONING_ADAPTER_DISABLED"):
-            return data
+            return kwargs
+        if not isinstance(kwargs, dict):
+            return kwargs
         try:
-            model = data.get("model")
-            classified = self._classify(model)
+            context = deployment_context(kwargs)
+            classified = self._classify(context)
             debug = bool(os.environ.get("REASONING_ADAPTER_DEBUG"))
             if classified is None:
                 if debug:
                     _log().info(
-                        "ReasoningAdapter: model=%r unlisted (no route) -> no-op",
-                        model,
+                        "ReasoningAdapter: deployment=%r unclassified -> no-op",
+                        context.get("name"),
                     )
-                return data
+                return kwargs
             side, route = classified
 
             def _reasoning_keys():
-                return {k: data.get(k) for k in ("thinking", "reasoning", "reasoning_effort")}
+                return {k: kwargs.get(k) for k in ("thinking", "reasoning", "reasoning_effort")}
 
             before = _reasoning_keys() if debug else None
             normalize = self._normalize_or_bound if side == "or" else self._normalize_native
-            action = normalize(data)
+            action = normalize(kwargs)
             if action is None:
                 if debug:
                     _log().info(
-                        "ReasoningAdapter: model=%s route=%s no-op (nothing to normalize)",
-                        model,
+                        "ReasoningAdapter: deployment=%s route=%s no-op (nothing to normalize)",
+                        context.get("name"),
                         route,
                     )
-                return data
+                return kwargs
             if debug:
                 _log().info(
-                    "ReasoningAdapter: model=%s route=%s action=%s before=%s after=%s",
-                    model,
+                    "ReasoningAdapter: deployment=%s route=%s action=%s before=%s after=%s",
+                    context.get("name"),
                     route,
                     action,
                     _json.dumps(before, default=str),
@@ -282,8 +289,8 @@ class ReasoningRouteAdapter(CustomLogger):
                 )
             else:
                 _log().info(
-                    "ReasoningAdapter: model=%s route=%s action=%s",
-                    model,
+                    "ReasoningAdapter: deployment=%s route=%s action=%s",
+                    context.get("name"),
                     route,
                     action,
                 )
@@ -292,7 +299,7 @@ class ReasoningRouteAdapter(CustomLogger):
                 "ReasoningAdapter: normalization failed, request left unchanged: %r",
                 exc,
             )
-        return data
+        return kwargs
 
 
 proxy_handler_instance = ReasoningRouteAdapter()

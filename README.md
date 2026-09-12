@@ -31,7 +31,7 @@ time_router/
 reasoning_route_adapter/
   reasoning_route_adapter.py              hook (mount at /app/reasoning_route_adapter.py)
   DESIGN.md  README.md  PLAN.md
-  tests/test_reasoning_route_adapter.py   offline acceptance checks
+  tests/test_reasoning_route_adapter.py   pytest (offline)
   probes/                                 live probes + recorded results
 ```
 
@@ -49,16 +49,13 @@ volumes:
   - ./reasoning_route_adapter/reasoning_route_adapter.py:/app/reasoning_route_adapter.py
 ```
 
-`hook_config.py` is imported by `time_router` (and, after the pending
-migration, by `reasoning_route_adapter`); it must be mounted or the proxy
+`hook_config.py` is imported by both hooks; it must be mounted or the proxy
 fails to import the hook.
 
 Registration order: `time_router` first (it reroutes the alias at request
-level). Today `reasoning_route_adapter` reads the rerouted model, so the order
-matters; the pending migration to the per-deployment hook
-([`reasoning_route_adapter/PLAN.md`](reasoning_route_adapter/PLAN.md)) makes it
-order-independent (it will classify by the bound deployment). See
-[`config.yaml.example`](config.yaml.example).
+level). `reasoning_route_adapter` classifies by the bound deployment
+(`async_pre_call_deployment_hook`), so its position in the list no longer
+matters. See [`config.yaml.example`](config.yaml.example).
 
 ## Retries and fallback (LiteLLM core)
 
@@ -89,9 +86,7 @@ knobs are documented in each hook's README. Copy
 ## Cross-cutting follow-ups
 
 - Shared `hook_config` module (per-model descriptors, `callback_settings`
-  reader, validation): implemented and wired into `time_router`; still pending
-  on `reasoning_route_adapter` (which keeps its own loader until its PLAN P0
-  migration).
+  reader, validation): implemented and wired into both hooks.
 - Re-validate on LiteLLM upgrades: the hooks depend on `verbose_proxy_logger`,
   the standard-logging metadata whitelist, and pre-call hook semantics
   (pinned to 1.99.0).
