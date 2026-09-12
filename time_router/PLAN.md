@@ -5,13 +5,12 @@ revision are implemented: the shared `hook_config` loader, config-driven
 targets and peak windows, knobs from `callback_settings`, the hard session
 cap, request-body fail-open, non-string session-id handling and offline tests.
 
-## P2 — Routing probes
+## P2 — Routing probes (manual)
 
-`probes/` is empty. Add a live probe for the alias: assert the served provider
-for a given `TIME_ROUTER_FAKE_HOUR` / `TIME_ROUTER_FAKE_MINUTE` /
-`TIME_ROUTER_FAKE_WEEKDAY`, and the sticky behavior across two requests
-sharing a session id. Env-gated (`LITELLM_BASE`, key); see the root README
-"Retries and fallback" for the fallback interaction.
+Clock routing is verified manually against the real deployment: the
+`TIME_ROUTER_FAKE_*` overrides are process environment, not per-request, so an
+automated probe would need a local proxy or a gateway restart. Operator-owned;
+no automation planned.
 
 ## P2 — Route label on the fallback path
 

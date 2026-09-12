@@ -32,9 +32,15 @@ licence: MIT
 """
 
 import os
+import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+
+# The hooks are mounted flat at /app, but load the shared module from this
+# file's directory so `import hook_config` also works when the config (and
+# therefore the hook source) lives outside the working directory.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import hook_config
 from litellm.integrations.custom_logger import CustomLogger

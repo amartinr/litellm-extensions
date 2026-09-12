@@ -61,7 +61,11 @@ licence: MIT
 
 import json as _json
 import os
+import sys
 import time
+
+# See time_router: load hook_config from this file's directory, not the cwd.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import hook_config
 from litellm.integrations.custom_logger import CustomLogger

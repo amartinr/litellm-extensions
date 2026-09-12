@@ -6,13 +6,13 @@ by the bound deployment, the shared `hook_config` loader (per-model descriptors
 + `callback_settings.reasoning_route_adapter` knobs), fail-open, and the pytest
 suite with real asserts. See `DESIGN.md` §4–§7 and the root README.
 
-## P1 — Root `reasoning_effort` passthrough
+## Decision — Root `reasoning_effort` is the client's responsibility
 
-The adapter only normalizes the incoming OR object. Out-of-vocabulary root
-values (`"medium"`, `"xhigh"`, `"minimal"`, `"none"`) pass through unchanged on
-both routes. Safe for pi today (its `thinkingLevelMap` filters unsupported
-levels), fragile for any client that does not. Decide: normalize the root value
-against the route vocabulary, or document the client obligation.
+The adapter normalizes the dialect of the bound route; it does not keep a
+second, per-target vocabulary for root `reasoning_effort`. Out-of-vocabulary
+root values (`"medium"`, `"xhigh"`, `"minimal"`, `"none"`) pass through
+unchanged, and the client must send a value the bound route honors (pi does
+this via its `thinkingLevelMap`). Do not add per-route root normalization.
 
 ## P2 — Observability
 

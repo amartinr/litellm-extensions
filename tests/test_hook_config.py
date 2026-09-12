@@ -224,6 +224,13 @@ def test_load_missing_path_is_empty():
     assert loaded.raw_settings == {}
 
 
+def test_load_no_config_path_warns(tmp_path, logs, monkeypatch):
+    monkeypatch.setattr(hook_config, "CONFIG_PATHS", [str(tmp_path / "missing.yaml")])
+    loaded = hook_config.load()
+    assert loaded.models == {}
+    assert any(level == "warning" and "no config file" in text for level, text in logs.messages)
+
+
 def test_load_reads_file(tmp_path, valid_config):
     import yaml
 

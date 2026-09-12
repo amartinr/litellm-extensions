@@ -186,6 +186,9 @@ def load(path: str | None = None) -> Loaded:
     config errors."""
     path = path or find_config_path()
     if not path:
+        get_logger().warning(
+            "hook_config: no config file found (tried %r) -> hooks no-op", CONFIG_PATHS
+        )
         return Loaded({}, {})
     try:
         with open(path) as fh:
