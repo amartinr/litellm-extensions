@@ -1,11 +1,14 @@
 # DESIGN — Reasoning-payload normalization at the LiteLLM gateway
 
-Status: implemented (offline acceptance green, 16/16 in
-`tests/test_reasoning_route_adapter.py`, stdlib-only venv); live checks of
-§6.2 pending gateway deployment.
+Status: implemented at request level (offline acceptance green, 16/16 in
+`tests/test_reasoning_route_adapter.py`, stdlib-only venv). Target
+architecture — per-deployment hook (§4.1, §7) and shared config loader
+(§5.2) — pending implementation. Live checks of §6.2 pending gateway
+deployment.
 Branch: `main` (repo `litellm-extensions`).
-Reference code: `../time_router/time_router.py` (module layout, config loading, logging,
-registration). Live evidence: `probes/` and `probes/README.md`.
+Reference code: `../time_router/time_router.py` (module layout, registration;
+config loading/logging via the shared `hook_config`, §5.2). Live evidence:
+`probes/` and `probes/README.md`.
 
 Self-contained specification for `reasoning_route_adapter.py`. Decisions
 that depend on evidence cite the source.
@@ -24,11 +27,15 @@ DeepSeek models through two upstreams with different reasoning dialects:
 | Native DeepSeek (`api.deepseek.com/v1`) | `deepseek/deepseek-v4-flash`, `deepseek/deepseek-v4-pro` | `thinking: {type: enabled\|disabled}` + root `reasoning_effort: low\|high\|max` | `reasoning_content` (required on every assistant message of a tool-calling history; missing → 400 on the raw API) |
 | OpenRouter (Baidu fp8) | `openrouter/deepseek-v4-flash` (upstream `deepseek/deepseek-v4-flash-0731`, `provider.order: ["baidu/fp8"]`) | OR object `reasoning: {enabled, effort}` (per-model metadata: `supported_efforts ["max","high","low"]`, `default_effort "high"`, `mandatory false`) | `reasoning` (canonical) or `reasoning_content` (documented alias, "functions identically") |
 
-The `time_router` hook (pre-call, registered first) reroutes the public alias
-`litellm/deepseek-v4-flash` to one of the two upstreams by clock and session
-stickiness. `router_settings.fallbacks` can also redirect
-`deepseek/deepseek-v4-flash` → `openrouter/deepseek-v4-flash` after a
-failure.
+The `time_router` hook (request-level pre-call, registered first) reroutes the
+public alias `litellm/deepseek-v4-flash` to one of the two upstreams by clock
+and session stickiness. It must stay at request level: it chooses the
+deployment by rewriting `data["model"]` before routing.
+`router_settings.fallbacks` can also redirect `deepseek/deepseek-v4-flash` →
+`openrouter/deepseek-v4-flash` after a failure. The adapter runs on the
+per-deployment pre-call hook (`async_pre_call_deployment_hook`, §4.1), so it
+sees the deployment bound for each attempt — including retries and fallback
+steps.
 
 ### 1.2 Client contract (assumption)
 
@@ -57,8 +64,8 @@ reasoning control at all); they never send the OR `reasoning` object:
     (time_router labels only; no rerouting, hence no peak avoidance on this
     path). Native dialect against the native API: no normalization needed.
     It reaches OR only when `router_settings.fallbacks` redirects after a
-    native failure — so the fallback pre-call re-execution question (§7) is
-    a live path for pi here, not hypothetical.
+    native failure — the case the adapter's per-deployment hook now covers
+    (§4.1, §7).
   A provider pointing straight at `api.deepseek.com` (no gateway at all) is
   the only config the hooks never see; it is not used in this deployment.
 
@@ -151,20 +158,23 @@ Derived rules (do not deviate without new evidence):
 
 `reasoning_route_adapter/reasoning_route_adapter.py`, mounted at
 `/app/reasoning_route_adapter.py` next to `config.yaml` and the
-`time_router` module. Mirror `../time_router/time_router.py`:
+`time_router` module. Module layout:
 
-- `CONFIG_PATHS` and module-level `ROUTE_MAP` (`model_name → route`) and
-  `DIALECT_MAP` (`model_name → reasoning_dialect`), built in one pass from
-  each `model_list` entry's `model_info.metadata` (`route` and
-  `reasoning_dialect`; mirror `time_router._load_route_map`; keep the module
-  import safe — no `litellm.proxy` imports at module level).
+- `ROUTE_MAP` (`model_name → route`) and `DIALECT_MAP`
+  (`model_name → reasoning_dialect`), derived from the shared config loader
+  `hook_config` (§5.2): it reads `config.yaml` once and exposes per-model
+  descriptors (`route`, `reasoning_dialect`, `time_router`). Mounted at
+  `/app/hook_config.py` alongside the two hooks; keep the module import safe
+  — no `litellm.proxy` imports at module level.
 - `class ReasoningRouteAdapter(CustomLogger)` implementing
-  `async async_pre_call_hook(self, user_api_key_dict, cache, data, call_type)`
-  → returns `data`.
+  `async async_pre_call_deployment_hook(self, kwargs, call_type)`
+  → returns `kwargs` (or `None` to leave the chain unchanged). It runs once
+  per real deployment attempt (original, retry, fallback step).
 - Module instance `proxy_handler_instance = ReasoningRouteAdapter()`.
 
-Registration (order matters — `time_router` first, it reroutes; the adapter
-reads the rerouted model):
+Registration (order no longer affects the adapter: it classifies by the bound
+deployment, not by `data["model"]`, so it does not depend on `time_router`
+having run first; the order is kept as-is):
 
 ```yaml
 litellm_settings:
@@ -174,39 +184,46 @@ litellm_settings:
     - 'reasoning_route_adapter.proxy_handler_instance'
 ```
 
-### 4.2 Input schema (`data` in `async_pre_call_hook`)
+### 4.2 Input schema (`kwargs` in `async_pre_call_deployment_hook`)
 
-`data` is the request dict, mirroring the client body at its root keys. The
-adapter reads/mutates only:
+`kwargs` is the completion request kwargs at the SDK boundary. The adapter
+reads/mutates only the root reasoning keys; classification reads the bound
+deployment from the router metadata bucket (`metadata` or `litellm_metadata`
+— check both):
 
 | Key | Type | Notes |
 |---|---|---|
-| `data["model"]` | str | Effective model after `time_router` reroute. Read-only. |
-| `data["thinking"]` | dict | Native control `{type: "enabled"\|"disabled"}` (clients) |
-| `data["reasoning"]` | dict | OR object `{enabled: bool, effort: str}` (probes/future clients) |
-| `data["reasoning_effort"]` | str | Root native/OpenAI-style effort (clients) |
-| `data["messages"]` | list | **Never modified.** |
+| `kwargs["model"]` | str | Provider model sent upstream. **Not** used for classification. |
+| `kwargs[metadata]["deployment_model_name"]` | str | `model_list` name of the bound deployment. Classification key. |
+| `kwargs[metadata]["model_info"]["metadata"]` | dict | Bound deployment's `model_info.metadata` (`route`, `reasoning_dialect`); preferred over the map lookup. |
+| `kwargs["thinking"]` | dict | Native control `{type: "enabled"\|"disabled"}` (clients) |
+| `kwargs["reasoning"]` | dict | OR object `{enabled: bool, effort: str}` (probes/future clients) |
+| `kwargs["reasoning_effort"]` | str | Root native/OpenAI-style effort (clients) |
+| `kwargs["messages"]` | list | **Never modified.** |
 | everything else | — | Never touched. |
 
-Presence semantics: absent key → not sent. `data["thinking"]` and
-`data["reasoning"]` may coexist (dual-spelling clients); the adapter makes
-them consistent per route (see 4.4, 4.5).
+Presence semantics: absent key → not sent. `kwargs["thinking"]` and
+`kwargs["reasoning"]` may coexist (dual-spelling clients); the adapter makes
+them consistent per bound route (see 4.4, 4.5).
 
-### 4.3 Route classification
+### 4.3 Route classification (bound deployment)
 
-Config-driven, two layers:
+Config-driven, two layers, evaluated on the **bound deployment** (never on
+`kwargs["model"]`, which is the provider model):
 
-- **Primary — declared dialect.** Each `model_list` entry declares
+- **Primary — declared dialect.** The deployment's
   `model_info.metadata.reasoning_dialect`: `"deepseek"` → native-bound,
-  `"openrouter"` → OR-bound. The classifier reads it via `DIALECT_MAP`
-  (`dialect = DIALECT_MAP.get(data["model"])`). A declared dialect outside
-  this vocabulary → **no-op** (fail-open, DEBUG log).
-- **Fallback — route-label taxonomy.** Entries without the declaration are
-  classified by `route = ROUTE_MAP.get(data["model"])` against the label
-  sets (env/constant, defaults native `{"deepseek"}`, OR `{"baidu/fp8"}`).
-- Model with neither (unlisted models, e.g. `anthropic/...`, or the alias
-  if `time_router` did not reroute and it carries no metadata) → **no-op**
-  (return `data` unchanged; DEBUG log).
+  `"openrouter"` → OR-bound. Read from
+  `kwargs[metadata]["model_info"]["metadata"]["reasoning_dialect"]`. A
+  declared dialect outside this vocabulary → **no-op** (fail-open, DEBUG
+  log).
+- **Fallback — route-label taxonomy.** When `model_info` is absent (e.g.
+  non-router SDK calls), classify by
+  `deployment_model_name = kwargs[metadata]["deployment_model_name"]` against
+  `DIALECT_MAP` / `ROUTE_MAP` and the label sets (defaults native
+  `{"deepseek"}`, OR `{"baidu/fp8"}`).
+- No deployment metadata (unlisted models, direct SDK calls) → **no-op**
+  (return `kwargs` unchanged; DEBUG log).
 
 Do not hardcode model names; everything comes from `config.yaml`
 (`reasoning_dialect` preferred, `route` as fallback — same source as
@@ -215,7 +232,7 @@ Do not hardcode model names; everything comes from `config.yaml`
 ### 4.4 OR-bound rules (route label `baidu/fp8`)
 
 Goal: make native-dialect control behave on OR. Rules, evaluated on the
-request dict, in order:
+request payload, in order:
 
 1. `thinking` present:
    - `thinking.type == "disabled"` → **rescue**: set
@@ -276,27 +293,85 @@ Example (probe/future client with OR object, OFF, native route):
 
 ### 4.6 Execution rules
 
-- `REASONING_ADAPTER_DISABLED=1` (env) → return `data` unchanged (rollback).
+- Runs once per real deployment attempt (original, retry, fallback step):
+  the SDK wrapper invokes it after the router selects the deployment and
+  before the request is sent.
+- `REASONING_ADAPTER_DISABLED=1` (env) → return `kwargs` unchanged (rollback).
 - Fail-open: wrap in `try/except`; on exception emit a warning at most once
-  per 5 min (`_rate_limited_warning`) and return `data` unchanged.
+  per 5 min (`_rate_limited_warning`) and return `kwargs` unchanged.
 - Idempotent: re-running over an already-normalized payload is a no-op
-  (check rules: `thinking` gone, `reasoning` set → no further change).
-- `data` keys are deleted with `data.pop(key, None)`; values set in place.
+  (check rules: `thinking` gone, `reasoning` set → no further change). This
+  matters because the same `kwargs` can be reused across attempts.
+- `kwargs` keys are deleted with `kwargs.pop(key, None)`; values set in
+  place. Return `kwargs` (or `None` to leave the chain unchanged).
+- Metadata bucket: read `kwargs["metadata"]` and `kwargs["litellm_metadata"]`
+  (the router picks one via `_get_router_metadata_variable_name`); use
+  whichever is present.
 - Logging via lazy `verbose_proxy_logger` import (copy `time_router._log`).
   Always log one line per applied transformation:
   `ReasoningAdapter: model=... route=... action=kill_switch_rescue|drop_thinking|object_to_native|...`.
   `REASONING_ADAPTER_DEBUG=1` → log the full before/after reasoning keys.
 
-## 5. Config reference addition
+## 5. Config surfaces and shared loader
 
-Two additions to `config.yaml`:
+### 5.1 Surfaces
 
-1. The registration block of §4.1 (`litellm_settings.callbacks`).
-2. `model_info.metadata.reasoning_dialect` on every reasoning-capable
-   `model_list` entry (§4.3 primary classification) — see
-   `../config.yaml.example`.
+- **Per-model facts** → `model_info.metadata` (already used):
+  `reasoning_dialect` (§4.3 primary classification) and `route` (label +
+  fallback taxonomy) — see `../config.yaml.example`.
+- **Hook operation knobs** → `callback_settings.reasoning_route_adapter` at
+  the **top level** of `config.yaml`:
 
-No other change.
+  ```yaml
+  callback_settings:
+    reasoning_route_adapter:
+      warning_interval_s: 300
+      native_route_labels: ["deepseek"]
+      or_route_labels: ["baidu/fp8"]
+  ```
+
+  v1.99.0 reads `config.get("callback_settings")` in `proxy_server.py` and
+  exposes it as `litellm.callback_settings`; it is **not**
+  `litellm_settings.callback_settings`. A `CustomLogger` registered by
+  dotted path does not receive its block automatically (only built-in
+  callbacks get `callback_specific_params`), so the hook reads it itself via
+  `hook_config.settings("reasoning_route_adapter")`. Defaults apply when the
+  block or a value is absent or of the wrong type.
+- **Provider protocol facts stay in code**: `EFFORT_MAP` and the synthetic
+  OFF object (not operator-tunable; must not diverge from provider semantics
+  — `probes/`).
+
+Registration is unchanged (§4.1).
+
+### 5.2 Shared loader `hook_config.py`
+
+Decision (pending implementation): the duplicated `CONFIG_PATHS` / YAML read
+/ `_log` plumbing, the `callback_settings` reader and the config validation
+live in one module, `hook_config.py`, mounted at `/app/hook_config.py` and
+imported as top-level `hook_config` by both hooks. API:
+
+- `MODELS` — `{model_name: {route, reasoning_dialect, time_router}}`.
+- `settings(hook_name)` — `callback_settings.<hook_name>` with defaults and
+  type checks.
+- `get_logger()` — the lazy `verbose_proxy_logger` accessor.
+
+Rationale: config I/O, validation and the settings reader exist once, so the
+hooks keep only their policy and cannot diverge. Rejected alternative: have
+`reasoning_route_adapter` import from `time_router` (avoids a third mount but
+couples the two hooks). Cost: a third volume mount (update the root
+`README.md` `volumes:` block); `/app` is on `sys.path` at runtime (LiteLLM's
+CLI appends `os.getcwd()`), so the import resolves. Not a net line reduction
+once validation/settings are included — the win is single-source behavior,
+not LOC. Offline tests stub `hook_config` instead of `yaml`/`litellm`.
+
+Error policy (never abort proxy startup):
+
+- unreadable / invalid YAML → `MODELS` empty, hooks no-op, one ERROR log;
+- parseable but semantically invalid `time_router` block (target missing,
+  `offpeak_target` without `peak_windows_utc`, malformed window) → reroute
+  disabled for that alias, ERROR per problem; never an invalid model and
+  never `route="unknown"`;
+- invalid `callback_settings` value → documented default + ERROR.
 
 ## 6. Acceptance criteria (definition of done)
 
@@ -304,10 +379,11 @@ No other change.
 
 Pure-function checks in the repo venv (stdlib only):
 
-1. Classification via fixture `DIALECT_MAP`/`ROUTE_MAP`: a declared dialect
-   wins (`deepseek/...` → native-bound, `openrouter/...` → OR-bound),
-   route-label fallback for entries without a declaration, unknown model or
-   unrecognized declared dialect → no-op.
+1. Classification by the bound deployment: a declared
+   `model_info.metadata.reasoning_dialect` wins (`deepseek/...` →
+   native-bound, `openrouter/...` → OR-bound), `deployment_model_name` →
+   `DIALECT_MAP`/`ROUTE_MAP` fallback for entries without the declaration,
+   unknown deployment or unrecognized declared dialect → no-op.
 2. §4.4 rule 1: disabled → object OFF + cleanup; other types → drop
    thinking. Before/after byte-exact vs the examples.
 3. §4.5 OFF and ON translations incl. the vocabulary table rows.
@@ -319,6 +395,13 @@ Pure-function checks in the repo venv (stdlib only):
    `thinking` on the native route) pass through byte-identical. On the OR
    route `thinking` is normalized per §4.4 rule 1 and is excluded.
 7. `messages` untouched in every case.
+
+The module under test reads config via the shared loader (§5.2), so the
+offline harness stubs `hook_config` (fixture `MODELS` and `settings()`)
+instead of `yaml`/`litellm`, and overrides `ROUTE_MAP`/`DIALECT_MAP` after
+import. Payloads are `kwargs`-shaped: a `model`, a metadata bucket carrying
+`deployment_model_name` and `model_info.metadata.reasoning_dialect`, plus the
+root reasoning keys.
 
 ### 6.2 Live (gateway, one provider per test; key from env, effort low)
 
@@ -337,25 +420,23 @@ Reuse `probes/` conventions (`probes/reasoning_format_tolerance.py` with
    `REASONING_ADAPTER_DISABLED=1`).
 5. Fallback path: force a direct-call failure so the router falls back to
    `openrouter/...`, with the client payload carrying `thinking:disabled` —
-   verify whether the pre-call hook re-runs on the fallback attempt and the
-   rescue applies (see 7).
+   the per-deployment hook must run on the fallback attempt and rescue the
+   kill switch to `reasoning:{enabled:false, effort:"none"}`.
 
-## 7. Open questions (resolve during implementation/deployment)
+## 7. Resolved decisions and remaining open questions
 
-- **Pre-call hook ordering** in v1.99.0: confirm with one DEBUG log in the
-  adapter that `data["model"]` is the rerouted name (time_router first in
-  `callbacks`). If the alias model appears un-rewritten, the `DIALECT_MAP`
-  lookup decides — the alias entry in `../config.yaml.example` declares
-  `reasoning_dialect: "openrouter"` (its default deployment), so OR rules
-  would apply.
-- **Fallback re-execution** (§6.2 item 5): whether `async_pre_call_hook`
-  runs again per fallback attempt is not assumed. Live path: pi configured
-  against the gateway with model `deepseek/deepseek-v4-flash` (§1.2). When
-  the native deployment fails, fallbacks redirect to `openrouter/...` with
-  a native-dialect payload (`thinking:disabled` included) — if the pre-call
-  hook does not re-run on the fallback attempt, the kill switch is ignored
-  by OR. Options if confirmed: client dual-spelling OFF (send the OR
-  object alongside `thinking`), or accept the gap.
+- **Fallback re-execution — resolved: migrate to the per-deployment hook.**
+  The request-level `async_pre_call_hook` runs once, before routing, and does
+  not re-run on a `router_settings.fallbacks` step. `async_pre_call_deployment_hook`
+  is invoked in LiteLLM's SDK wrapper (`litellm/utils.py`) and the router
+  dispatches every attempt (original, retry, fallback step) through it, so
+  the adapter moves there (§4.1). This closes the gap where a native-dialect
+  payload (`thinking:disabled`) redirected to `openrouter/...` was not
+  rescued — a whole outage/cooldown window, not a single request.
+- **Pre-call hook ordering — resolved.** The adapter classifies by the bound
+  deployment (§4.3), not by `data["model"]`, so it no longer depends on
+  `time_router` having run first. `time_router` stays request-level (it must
+  choose the deployment before routing).
 - LiteLLM's own DeepSeek transformation (`transformation.py`, placeholder
   injection when `reasoning_content` is missing) is orthogonal: clients
   already carry the field (§1.3 row 5); no interaction expected.
