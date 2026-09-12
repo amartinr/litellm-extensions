@@ -36,7 +36,7 @@ DAYS_PER_WEEK = 7
 
 # Operation-knob defaults. Single source: SETTINGS_DEFAULTS below and the
 # hooks' fallback constants reference these names.
-DEFAULT_SESSION_TTL_S = 3600
+DEFAULT_SESSION_TTL_S = 900
 DEFAULT_MAX_SESSION_ENTRIES = 128
 DEFAULT_WARNING_INTERVAL_S = 300
 

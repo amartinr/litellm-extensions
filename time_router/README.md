@@ -19,7 +19,7 @@ LiteLLM pre-call hook (`CustomLogger`) for the alias
      to the peak target once;
    - active session pinned to the peak target crossing into off-peak → stays
      (one-way ratchet while active);
-   - idle beyond `session_ttl_s` (default 3600 s) → pin dropped, routing
+   - idle beyond `session_ttl_s` (default 900 s) → pin dropped, routing
      re-evaluates by the clock;
    - requests without a session id fall back to stateless hour-based routing.
 3. **Route labeling** — requests for the alias target and for any model in
@@ -60,7 +60,7 @@ Read through the shared [`hook_config`](../hook_config.py) loader:
   `route` (label), `time_router.reroute` (alias → peak/offpeak targets) and
   `time_router.peak_windows` on the offpeak target entry.
 - **Operation knobs** — top-level `callback_settings.time_router`:
-  `session_ttl_s` (default 3600) and `max_session_entries` (default 128).
+  `session_ttl_s` (default 900) and `max_session_entries` (default 128).
 
 See [`../config.yaml.example`](../config.yaml.example).
 

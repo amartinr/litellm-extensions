@@ -171,7 +171,7 @@ def test_parse_window_weekend_excluded_by_omission():
 # -------------------------------------------------------------------- settings
 def test_settings_for_defaults_when_absent():
     assert hook_config.settings_for({}, "time_router") == {
-        "session_ttl_s": 3600,
+        "session_ttl_s": 900,
         "max_session_entries": 128,
     }
     assert hook_config.settings_for({}, "reasoning_route_adapter") == {
@@ -202,13 +202,13 @@ def test_settings_for_unknown_hook_is_empty():
 )
 def test_settings_for_wrong_type_falls_back_to_default(logs, block):
     settings = hook_config.settings_for({"time_router": block}, "time_router")
-    assert settings == {"session_ttl_s": 3600, "max_session_entries": 128}
+    assert settings == {"session_ttl_s": 900, "max_session_entries": 128}
     assert any(level == "warning" for level, _ in logs.messages)
 
 
 def test_settings_for_non_dict_block_falls_back(logs):
     settings = hook_config.settings_for({"time_router": "nope"}, "time_router")
-    assert settings == {"session_ttl_s": 3600, "max_session_entries": 128}
+    assert settings == {"session_ttl_s": 900, "max_session_entries": 128}
     assert any("not a dict" in text for _, text in logs.messages)
 
 
