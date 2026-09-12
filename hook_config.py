@@ -35,7 +35,7 @@ CONFIG_PATHS = [
 # callback_settings.<hook> defaults. Applied when the block or a value is
 # absent or has the wrong type (the latter also logs a warning).
 SETTINGS_DEFAULTS: dict[str, dict[str, Any]] = {
-    "time_router": {"session_ttl_s": 900, "max_session_entries": 128},
+    "time_router": {"session_ttl_s": 3600, "max_session_entries": 128},
     "reasoning_route_adapter": {
         "warning_interval_s": 300,
         "native_route_labels": ["deepseek"],

@@ -48,7 +48,7 @@ from litellm.integrations.custom_logger import CustomLogger
 # Populated by _load_config() at import and refreshed by tests/reloads.
 ROUTE_MAP: dict[str, str] = {}
 ALIASES: dict[str, "AliasRoute"] = {}
-SESSION_TTL_S = 900
+SESSION_TTL_S = 3600
 MAX_SESSION_ENTRIES = 128
 _session_state: dict[str, dict] = {}  # session_id -> {"alias", "route", "last_seen"}
 

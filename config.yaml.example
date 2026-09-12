@@ -128,7 +128,7 @@ general_settings:
 # entry (see PLAN.md / DESIGN.md §5.1).
 callback_settings:
   time_router:
-    session_ttl_s: 900
+    session_ttl_s: 3600
     max_session_entries: 128
   reasoning_route_adapter:
     warning_interval_s: 300
