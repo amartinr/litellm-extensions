@@ -32,8 +32,8 @@ facts backed by `probes/` (DeepSeek's collapse table; OpenRouter's
 kill-switch contract), not operator-tunable knobs; a config surface could
 diverge from the provider's actual semantics.
 
-Config is read through the shared `hook_config` module (`MODELS` for the
-per-model descriptors, `settings()` for the knobs above) — see
+Config is read through the shared `hook_config` module (`load()` for the
+`Loaded.models` descriptors, `.settings()` for the knobs above) — see
 `time_router/PLAN.md` and `DESIGN.md` §5.2.
 
 The adapter overrides `async_pre_call_deployment_hook` (runs per real
@@ -67,7 +67,7 @@ Work:
 ## P0 — Fail-open on config load
 
 Owned by the shared loader (see "Configuration target"): unreadable / invalid
-YAML → `MODELS` empty, the hook no-ops, one ERROR log; invalid
+YAML → no models, the hook no-ops, one ERROR log; invalid
 `callback_settings` types → documented default + ERROR. The hook keeps its
 `try/except` around the deployment-hook body (fail-open).
 

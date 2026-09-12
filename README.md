@@ -19,13 +19,13 @@ adapter live in
 
 ```
 config.yaml.example                       shared LiteLLM config reference (both hooks)
-hook_config.py                            shared config loader (pending; mount at /app/hook_config.py)
+hook_config.py                            shared config loader (mount at /app/hook_config.py)
 .env.example                              shared environment reference
 
 time_router/
   time_router.py                          hook (mount at /app/time_router.py)
   README.md  PLAN.md
-  tests/                                  placeholder
+  tests/test_time_router.py               pytest (offline)
   probes/                                 placeholder
 
 reasoning_route_adapter/
@@ -44,13 +44,14 @@ working directory (`/app` in Docker). Example mounts:
 ```yaml
 volumes:
   - ./config.yaml:/app/config.yaml
+  - ./hook_config.py:/app/hook_config.py
   - ./time_router/time_router.py:/app/time_router.py
   - ./reasoning_route_adapter/reasoning_route_adapter.py:/app/reasoning_route_adapter.py
 ```
 
-When the shared config loader lands (`hook_config.py`, see PLAN), add it as a
-third mount so both hooks can `import hook_config`:
-`- ./hook_config.py:/app/hook_config.py`.
+`hook_config.py` is imported by `time_router` (and, after the pending
+migration, by `reasoning_route_adapter`); it must be mounted or the proxy
+fails to import the hook.
 
 Registration order: `time_router` first (it reroutes the alias at request
 level). Today `reasoning_route_adapter` reads the rerouted model, so the order
@@ -87,11 +88,10 @@ knobs are documented in each hook's README. Copy
 
 ## Cross-cutting follow-ups
 
-- Extract the duplicated `CONFIG_PATHS` / config-load / `_log` plumbing shared
-  by both hooks into a common module (`hook_config`), together with the
-  `model_info.metadata` descriptor builder, the top-level `callback_settings`
-  reader and its validation. See `time_router/PLAN.md` and
-  `reasoning_route_adapter/DESIGN.md` §5.2.
+- Shared `hook_config` module (per-model descriptors, `callback_settings`
+  reader, validation): implemented and wired into `time_router`; still pending
+  on `reasoning_route_adapter` (which keeps its own loader until its PLAN P0
+  migration).
 - Re-validate on LiteLLM upgrades: the hooks depend on `verbose_proxy_logger`,
   the standard-logging metadata whitelist, and pre-call hook semantics
   (pinned to 1.99.0).

@@ -20,11 +20,11 @@
 #   - the alias entry in model_list is the only name clients know
 #   - keys are referenced as os.environ/... (see .env.example)
 #
-# PENDING (see PLAN.md): the config-driven targets/windows, the shared
-# hook_config loader and the per-deployment adapter hook are not implemented
-# yet. Until they land the hook code still uses its module constants, so the
-# time_router metadata and callback_settings below are inert (the metadata is
-# ignored and the callback_settings block is loaded but not read by the hooks).
+# Status: `time_router` consumes the alias `time_router` metadata and the
+# `callback_settings.time_router` block through the shared hook_config loader.
+# PENDING (see PLAN.md): the adapter's per-deployment hook migration; until it
+# lands the adapter keeps its own loader and does not read
+# callback_settings.reasoning_route_adapter.
 #
 # The hooks are imported as the modules `time_router` and
 # `reasoning_route_adapter` (source under `time_router/` and

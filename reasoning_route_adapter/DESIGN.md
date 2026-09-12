@@ -1,10 +1,9 @@
 # DESIGN — Reasoning-payload normalization at the LiteLLM gateway
 
-Status: implemented at request level (offline acceptance green, 16/16 in
-`tests/test_reasoning_route_adapter.py`, stdlib-only venv). Target
-architecture — per-deployment hook (§4.1, §7) and shared config loader
-(§5.2) — pending implementation. Live checks of §6.2 pending gateway
-deployment.
+Status: implemented at request level (legacy stdlib test script, to be
+rewritten to pytest with real asserts). Pending: migrate to the per-deployment
+hook (§4.1, §7) and wire the shared `hook_config` loader (§5.2, already used by
+`time_router`). Live checks of §6.2 pending gateway deployment.
 Branch: `main` (repo `litellm-extensions`).
 Reference code: `../time_router/time_router.py` (module layout, registration;
 config loading/logging via the shared `hook_config`, §5.2). Live evidence:
@@ -162,10 +161,10 @@ Derived rules (do not deviate without new evidence):
 
 - `ROUTE_MAP` (`model_name → route`) and `DIALECT_MAP`
   (`model_name → reasoning_dialect`), derived from the shared config loader
-  `hook_config` (§5.2): it reads `config.yaml` once and exposes per-model
-  descriptors (`route`, `reasoning_dialect`, `time_router`). Mounted at
-  `/app/hook_config.py` alongside the two hooks; keep the module import safe
-  — no `litellm.proxy` imports at module level.
+  `hook_config` (§5.2): each hook calls `hook_config.load()` at module level
+  and derives the maps from `Loaded.models` (`route`, `reasoning_dialect`,
+  `time_router`). Mounted at `/app/hook_config.py` alongside the two hooks;
+  keep the module import safe — no `litellm.proxy` imports at module level.
 - `class ReasoningRouteAdapter(CustomLogger)` implementing
   `async async_pre_call_deployment_hook(self, kwargs, call_type)`
   → returns `kwargs` (or `None` to leave the chain unchanged). It runs once
@@ -345,15 +344,15 @@ Registration is unchanged (§4.1).
 
 ### 5.2 Shared loader `hook_config.py`
 
-Decision (pending implementation): the duplicated `CONFIG_PATHS` / YAML read
-/ `_log` plumbing, the `callback_settings` reader and the config validation
-live in one module, `hook_config.py`, mounted at `/app/hook_config.py` and
-imported as top-level `hook_config` by both hooks. API:
+Implemented module (`hook_config.py`), mounted at `/app/hook_config.py` and
+imported as top-level `hook_config`. `time_router` uses it; this adapter wires
+it in during the P0 migration. API:
 
-- `MODELS` — `{model_name: {route, reasoning_dialect, time_router}}`.
-- `settings(hook_name)` — `callback_settings.<hook_name>` with defaults and
-  type checks.
-- `get_logger()` — the lazy `verbose_proxy_logger` accessor.
+- `load(path=None)` — reads `config.yaml` and returns a `Loaded` with
+  `.models` (`{model_name: {route, reasoning_dialect, time_router}}`) and
+  `.settings(hook_name)` (`callback_settings.<hook>` with defaults and type
+  checks). Each hook calls it at module level so a config reload refreshes it.
+- `get_logger()` — the lazy `verbose_proxy_logger` accessor (stdlib fallback).
 
 Rationale: config I/O, validation and the settings reader exist once, so the
 hooks keep only their policy and cannot diverge. Rejected alternative: have
@@ -366,7 +365,7 @@ not LOC. Offline tests stub `hook_config` instead of `yaml`/`litellm`.
 
 Error policy (never abort proxy startup):
 
-- unreadable / invalid YAML → `MODELS` empty, hooks no-op, one ERROR log;
+- unreadable / invalid YAML → no models, hooks no-op, one ERROR log;
 - parseable but semantically invalid `time_router` block (target missing,
   `offpeak_target` without `peak_windows`, malformed window) → reroute
   disabled for that alias, ERROR per problem; never an invalid model and
@@ -397,9 +396,9 @@ Pure-function checks in the repo venv (stdlib only):
 7. `messages` untouched in every case.
 
 The module under test reads config via the shared loader (§5.2), so the
-offline harness stubs `hook_config` (fixture `MODELS` and `settings()`)
-instead of `yaml`/`litellm`, and overrides `ROUTE_MAP`/`DIALECT_MAP` after
-import. Payloads are `kwargs`-shaped: a `model`, a metadata bucket carrying
+offline harness stubs `hook_config` (a `Loaded` fixture) instead of
+`yaml`/`litellm`, and overrides `ROUTE_MAP`/`DIALECT_MAP` after import.
+Payloads are `kwargs`-shaped: a `model`, a metadata bucket carrying
 `deployment_model_name` and `model_info.metadata.reasoning_dialect`, plus the
 root reasoning keys.
 
