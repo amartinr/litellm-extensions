@@ -47,8 +47,9 @@ DeepSeek models are assumed to already speak the native dialect (or send no
 reasoning control at all); they never send the OR `reasoning` object:
 
 - **pi coding agent** → two LiteLLM configs, both sending the native
-  dialect once the §9 models.json compat delta is applied (pi core emits it;
-  the extension `pi-deepseek-reasoning-chain-fix` refines it where scoped):
+  dialect once the client-side `compat` delta is applied (see
+  [`DEPLOYMENT.md`](DEPLOYMENT.md); pi core emits it, the extension
+  `amartinr/pi-deepseek-reasoning-chain-fix` refines it where scoped):
   assistant `reasoning_content` forced/replayed in tool scope;
   reasoning control native — `thinking:{type:"disabled"}` when the user
   disables reasoning, root `reasoning_effort` when the user sets a level
@@ -89,10 +90,11 @@ reasoning control at all); they never send the OR `reasoning` object:
   gateway, `api: openai-completions`): detectCompat classifies it as generic
   OpenAI (`thinkingFormat: "openai"`), so today reasoning ON emits root
   `reasoning_effort` but reasoning OFF emits **nothing** — no kill switch
-  reaches the gateway (silent over-spend on both routes). The §9 compat
-  delta makes pi emit the native dialect assumed above; the adapter's
-  peak-hour fix is coupled to it (deploy together). The extension is scoped
-  to `deepseek/...` ids and does not cover the alias model.
+  reaches the gateway (silent over-spend on both routes). The client-side
+  `compat` delta ([`DEPLOYMENT.md`](DEPLOYMENT.md)) makes pi emit the native
+  dialect assumed above; the adapter's peak-hour fix is coupled to it (deploy
+  together). The extension is scoped to `deepseek/...` ids and does not cover
+  the alias model unless it is added.
 - **Open WebUI pipe (`agent_loop_guard`)** → `litellm/deepseek-v4-flash`
   (alias, rerouted by `time_router`). Sends assistant messages with
   `reasoning_content`; sends **no** reasoning control params (OWUI filters
@@ -131,6 +133,61 @@ Derived rules (do not deviate without new evidence):
   `reasoning_content` → `reasoning` rename (Option A decision).
 - On the native route, native control already works (row 1 native column);
   only an incoming OR object needs translation (row 2 native column).
+
+### 1.4 Reasoning-effort *level* is ineffective through this gateway (measured 2026-09-12, LiteLLM v1.99.0)
+
+Follow-up measurement after the `openrouter/` provider-prefix change (see
+`DEPLOYMENT.md`). Summary: on **both** routes only the ON/OFF kill switch is
+reliable; the effort **level** (`low`/`high`/`max`) is not.
+
+- **Native route** (`deepseek/...`, provider `deepseek`): LiteLLM's
+  `DeepSeekChatConfig.map_openai_params()` uses `reasoning_effort` only to
+  pick `thinking:{type:enabled|disabled}` and **discards the value**
+  ([litellm #27439](https://github.com/BerriAI/litellm/issues/27439)). Every
+  non-`none` level collapses to the default effort (`high`). Measured on the
+  `change50` prompt (n=5): `minimal` 397, `low` 398, `medium` 376, `high`
+  454 (one 940 outlier; ≈338 without it), `xhigh` 321, `max` 351 reasoning
+  tokens — overlapping, no ordering; `none` 0. The knob is inert,
+  deterministically.
+- **OR route** (`openrouter/...`, provider `openrouter`): the level **is**
+  forwarded, but the provider honours it erratically. Measured on `change50`
+  (n=9/level): `minimal` 359, `low` 392, `medium` 289, `high` 251, `xhigh`
+  293, `max` 232 reasoning tokens (σ 200–455); `none` 0. The pattern is
+  inverted (`low` > `high`) and not distinguishable from noise. An isolation
+  test sending the level via the OR object `reasoning:{effort:...}`
+  (bypassing LiteLLM's `max→xhigh` remap) reproduced the same inversion, so
+  it is the provider, not the LiteLLM path.
+- **Provider caveat**: `streamlake/fp8` is the pinned provider here. The
+  public production analysis *OpenRouter's Hidden Chaos* (18M messages)
+  reports the same ("some providers ignored the knob entirely"), and
+  OpenRouter's docs list effort levels as officially supported for
+  OpenAI/Grok only.
+- **Vocabulary split in OR metadata**: the floating ids
+  `deepseek/deepseek-v4-flash` / `-pro` expose `supported_efforts:
+  ["xhigh","high"]` (2 levels), while the pinned `-0731` / `-pro-0813`
+  expose `["max","high","low"]` (3 levels). `OpenrouterConfig` remaps
+  `max→xhigh`, correct for the floating id but not for the pinned `-0731`,
+  which does not list `xhigh`.
+- DeepSeek's docs define the native collapse table (`minimal→low`,
+  `medium→high`, `xhigh→high`, `max→max`, `ultra→max`, default `high`) —
+  already mirrored by §4.5's `EFFORT_MAP`.
+- **Upstream fix in review**: [litellm PR #40717](https://github.com/BerriAI/litellm/pull/40717)
+  (open, 2026-09-11) forwards `reasoning_effort` on the native path. But only
+  when **no explicit `thinking` toggle** is present: an explicit
+  `thinking:{type:enabled|disabled}` is honoured as given and **no effort is
+  merged into it** (its test `test_explicit_thinking_is_honoured_exactly_as_given`).
+  Clients here *do* send the toggle — pi's `compat` delta (`DEPLOYMENT.md` §1)
+  adds `thinking:{type:"enabled"}` next to root `reasoning_effort`, and the
+  adapter's `object_to_native_on` (§4.5) sets both — so even after the PR lands
+  the native level would remain inert unless the client/adapter sends
+  `reasoning_effort` **without** `thinking` (the recorded activation path —
+  adapter-side, forward-compatible — is in `PLAN.md`).
+
+Consequence: `object_to_native_on` (§4.5) emits a `reasoning_effort` that
+LiteLLM **discards** on native, so only its `thinking` part takes effect; the
+OR-bound ON path (§4.4 rule 3) reaches a provider that does not honour the
+level reliably. Do not build cost logic on the level — use the kill switch
+and `max_tokens`.
 
 ## 2. Goals
 
@@ -242,7 +299,8 @@ request payload, in order:
      rows 3–4).
 2. `reasoning` present → leave as-is (already OR dialect).
 3. Root `reasoning_effort` present (no `thinking`) → leave as-is (cheap on
-   OR, row 4).
+   OR, row 4). The *level* itself is not reliably honoured by the provider
+   once forwarded — see §1.4.
 4. Nothing reasoning-related present → no-op.
 
 Example (pi fallback to OR, reasoning off):
@@ -279,6 +337,10 @@ translate an incoming OR object so OFF/effort behave on native (row 2).
 2. `thinking` present (native dialect) → leave as-is (native honors it).
 3. Root `reasoning_effort` present → leave as-is.
 4. Nothing reasoning-related present → no-op.
+
+> Note (LiteLLM v1.99.0): the mapped `reasoning_effort` is discarded on the
+> native route by `DeepSeekChatConfig` ([litellm #27439]); only the
+> `thinking` part takes effect. See §1.4.
 
 Example (probe/future client with OR object, OFF, native route):
 
@@ -458,70 +520,19 @@ Non-retryable errors (400/401/403/404) fall back immediately; retryable ones
   and results in `probes/README.md` — the route delivers reasoning under
   `reasoning_content` (stream and non-stream, OR and native); ad-hoc
   native-shape tolerance check (n=1) recorded alongside.
+- Reasoning-effort level (2026-09-12, §1.4): live matrix on native and OR
+  (root `reasoning_effort` and OR `reasoning:{effort}`), plus [litellm
+  #27439](https://github.com/BerriAI/litellm/issues/27439) (DeepSeek handler
+  discards the level) and OpenRouter's reasoning-tokens docs / public
+  production analysis for the provider-side variability.
 
-## 9. Activation notes (this deployment, 2026-09-09)
+## 9. Client-side activation (this deployment)
 
 The peak-hour fix couples a client-side change with the adapter; they land
-**together** (models.json alone fixes off-peak OFF only — native honors the
-kill switch; the adapter alone has nothing to rescue — pi must emit it).
-
-### 9.1 pi models.json delta
-
-Current state: provider keyed `litellm` (baseUrl = gateway, `api:
-openai-completions`, compat only `supportsDeveloperRole:false` +
-`supportsReasoningEffort:true`). detectCompat classifies it as generic
-OpenAI (`thinkingFormat: "openai"`): reasoning ON emits root
-`reasoning_effort` (honored and cheap on both routes); reasoning OFF emits
-nothing — DeepSeek reasons by default and the user pays for reasoning they
-disabled (silent over-spend, both routes).
-
-Required compat delta:
-
-    "compat": {
-      "supportsDeveloperRole": false,
-      "supportsReasoningEffort": true,
-      "thinkingFormat": "deepseek",   # kill-switch emission
-      "maxTokensField": "max_tokens", # native field name
-      "requiresReasoningContentOnAssistantMessages": true  # tool-scope "" net
-    }
-
-Effects after the delta:
-
-- OFF → `thinking:{type:"disabled"}`: honored natively (off-peak) and
-  rescued by the adapter to the OR OFF object (peak, 0 tokens).
-- ON → `thinking:{type:"enabled"}` is added next to the root
-  `reasoning_effort` (the documented native curl form); behavior is
-  byte-equivalent on both routes (the adapter drops the redundant
-  `thinking` on OR and keeps the cheap root effort).
-- `max_tokens` replaces `max_completion_tokens` (the field DeepSeek
-  documents).
-- Tool scope: pi core forces `reasoning_content` (`""`; the extension
-  forces `" "` where scoped — both accepted, blank-chain equivalent per
-  probes).
-
-### 9.2 Extension `pi-deepseek-reasoning-chain-fix`
-
-Config scope (`extensions/.../config.json`) lists `deepseek/...` ids only —
-the alias `litellm/deepseek-v4-flash` is NOT covered; add it to extend the
-signature-restore/placeholder behavior to the alias. Role after the delta:
-wire-compliance refinement (`" "` vs `""`) and signature restore for
-resumed/persisted sessions (pi core replays real text only when the stored
-thinking block carries a recognized signature). Its OR-turn signature
-normalization is defensive insurance, not active on this route: the gateway
-delivers OR reasoning as `reasoning_content` (probe 3, 2026-09-09), so pi
-already stores the native signature after OR-served turns. If that drifts
-to the canonical `reasoning`, native tolerates the stray field without a
-4xx but drops its content (ad-hoc check 2026-09-09, n=1) and the extension
-becomes the active guard.
-
-### 9.3 Behavioral deltas at deployment
-
-- Off-peak (alias → native): the adapter is a no-op for native-dialect
-  payloads (native-bound rules only act on an OR `reasoning` object).
-  models.json delta: reasoning OFF now actually disables reasoning (the
-  fix); reasoning ON byte-equivalent; `reasoning_content: ""` vs LiteLLM's
-  `" "` placeholder — same blank-chain class.
-- Peak (alias → OR): reasoning ON → the adapter drops the redundant
-  `thinking` and keeps root `reasoning_effort` (cheap on OR) —
-  byte-equivalent outcome; reasoning OFF → `kill_switch_rescue` to the OR
-  OFF object — 0 tokens (was 47-57 and billed).
+**together** (the `models.json` delta alone fixes off-peak OFF only — native
+honors the kill switch; the adapter alone has nothing to rescue — pi must
+emit it). The full activation notes — the pi `models.json` `compat` delta,
+the extension dependency
+([`amartinr/pi-deepseek-reasoning-chain-fix`](https://github.com/amartinr/pi-deepseek-reasoning-chain-fix))
+and the behavioral deltas at deployment — live in
+[`DEPLOYMENT.md`](DEPLOYMENT.md).

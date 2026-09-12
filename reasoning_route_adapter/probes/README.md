@@ -1,7 +1,8 @@
 # Probes — reasoning-format contract for DeepSeek via OpenRouter
 
 Context: clients of this gateway (the Open WebUI `agent_loop_guard` pipe, the
-pi `pi-deepseek-reasoning-chain-fix` extension) build requests in DeepSeek's
+pi `amartinr/pi-deepseek-reasoning-chain-fix` extension) build requests in
+DeepSeek's
 native reasoning vocabulary. When `time_router` sends alias traffic to
 OpenRouter during peak windows, those requests reach OpenRouter, which
 normalizes reasoning through its own interface. These probes verify, against
@@ -212,7 +213,8 @@ consistent with the gateway's failure metrics for this provider.
   (the required native field).
 
 Implication: the pi extension's OR-turn signature normalization
-(`pi-deepseek-reasoning-chain-fix`) is defensive insurance against drift,
+(`amartinr/pi-deepseek-reasoning-chain-fix`) is defensive insurance against
+drift,
 not an active fix on today's route.
 
 ### Ad-hoc: native tolerance of replayed-assistant-message shapes (n=1)

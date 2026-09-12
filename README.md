@@ -31,6 +31,7 @@ time_router/
 reasoning_route_adapter/
   reasoning_route_adapter.py              hook (mount at /app/reasoning_route_adapter.py)
   DESIGN.md  README.md  PLAN.md
+  DEPLOYMENT.md                           client-side activation (pi models.json + extension)
   tests/test_reasoning_route_adapter.py   pytest (offline)
   probes/                                 live probes + recorded results
 ```

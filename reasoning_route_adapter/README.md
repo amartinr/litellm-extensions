@@ -91,6 +91,10 @@ One line per applied transformation:
 Mounted at `/app/reasoning_route_adapter.py` next to `config.yaml`,
 `hook_config.py` and `time_router.py`.
 
+Client-side activation for this deployment (pi `models.json` `compat` delta
+and the `amartinr/pi-deepseek-reasoning-chain-fix` extension):
+[`DEPLOYMENT.md`](DEPLOYMENT.md).
+
 ## Tests
 
 ```
