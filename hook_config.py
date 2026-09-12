@@ -32,12 +32,23 @@ CONFIG_PATHS = [
     "./config.yaml",
 ]
 
+DAYS_PER_WEEK = 7
+
+# Operation-knob defaults. Single source: SETTINGS_DEFAULTS below and the
+# hooks' fallback constants reference these names.
+DEFAULT_SESSION_TTL_S = 3600
+DEFAULT_MAX_SESSION_ENTRIES = 128
+DEFAULT_WARNING_INTERVAL_S = 300
+
 # callback_settings.<hook> defaults. Applied when the block or a value is
 # absent or has the wrong type (the latter also logs a warning).
 SETTINGS_DEFAULTS: dict[str, dict[str, Any]] = {
-    "time_router": {"session_ttl_s": 3600, "max_session_entries": 128},
+    "time_router": {
+        "session_ttl_s": DEFAULT_SESSION_TTL_S,
+        "max_session_entries": DEFAULT_MAX_SESSION_ENTRIES,
+    },
     "reasoning_route_adapter": {
-        "warning_interval_s": 300,
+        "warning_interval_s": DEFAULT_WARNING_INTERVAL_S,
         "native_route_labels": ["deepseek"],
         "or_route_labels": ["baidu/fp8"],
     },
@@ -81,7 +92,7 @@ def parse_window(raw: Any) -> tuple[frozenset[int], dtime, dtime] | None:
         end = dtime.fromisoformat(str(raw["end"]))
     except Exception:
         return None
-    if not days or not days <= set(range(7)) or start >= end:
+    if not days or not days <= set(range(DAYS_PER_WEEK)) or start >= end:
         return None
     return days, start, end
 

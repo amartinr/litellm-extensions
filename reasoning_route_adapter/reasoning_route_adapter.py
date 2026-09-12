@@ -75,7 +75,8 @@ ROUTE_MAP: dict[str, str] = {}
 DIALECT_MAP: dict[str, str] = {}
 NATIVE_ROUTE_LABELS: set = {"deepseek"}
 OR_ROUTE_LABELS: set = {"baidu/fp8"}
-_WARNING_INTERVAL_S = 300.0
+_NEVER_WARNED_AT = 0.0
+_WARNING_INTERVAL_S = hook_config.DEFAULT_WARNING_INTERVAL_S
 
 # Fallback taxonomy - used only for deployments that do NOT declare
 # model_info.metadata.reasoning_dialect (the declared dialect is the primary
@@ -120,7 +121,7 @@ def _log():
     return hook_config.get_logger()
 
 
-_last_warning_at = [0.0]
+_last_warning_at = [_NEVER_WARNED_AT]
 
 
 def _rate_limited_warning(msg: str, *args) -> None:

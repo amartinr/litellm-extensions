@@ -45,11 +45,18 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import hook_config
 from litellm.integrations.custom_logger import CustomLogger
 
+# Clock constants (TIME_ROUTER_FAKE_* overrides) and log-field limits.
+HOURS_PER_DAY = 24
+MINUTES_PER_HOUR = 60
+DAYS_PER_WEEK = 7
+SESSION_LOG_PREFIX = 12
+LOG_VALUE_MAX = 80
+
 # Populated by _load_config() at import and refreshed by tests/reloads.
 ROUTE_MAP: dict[str, str] = {}
 ALIASES: dict[str, "AliasRoute"] = {}
-SESSION_TTL_S = 3600
-MAX_SESSION_ENTRIES = 128
+SESSION_TTL_S = hook_config.SETTINGS_DEFAULTS["time_router"]["session_ttl_s"]
+MAX_SESSION_ENTRIES = hook_config.SETTINGS_DEFAULTS["time_router"]["max_session_entries"]
 _session_state: dict[str, dict] = {}  # session_id -> {"alias", "route", "last_seen"}
 
 
@@ -112,8 +119,9 @@ def _log():
     return hook_config.get_logger()
 
 
-_last_warning_at = [0.0]
-_WARNING_INTERVAL_S = 300.0
+_NEVER_WARNED_AT = 0.0
+_last_warning_at = [_NEVER_WARNED_AT]
+_WARNING_INTERVAL_S = hook_config.DEFAULT_WARNING_INTERVAL_S
 
 
 def _rate_limited_warning(msg: str, *args) -> None:
@@ -143,13 +151,13 @@ def _utc_now() -> datetime:
     now = datetime.now(timezone.utc)
     fake_weekday = _fake_int("TIME_ROUTER_FAKE_WEEKDAY")
     if fake_weekday is not None:
-        now += timedelta(days=(fake_weekday % 7 - now.weekday()) % 7)
+        now += timedelta(days=(fake_weekday % DAYS_PER_WEEK - now.weekday()) % DAYS_PER_WEEK)
     fake_hour = _fake_int("TIME_ROUTER_FAKE_HOUR")
     fake_minute = _fake_int("TIME_ROUTER_FAKE_MINUTE")
     if fake_hour is not None or fake_minute is not None:
         now = now.replace(
-            hour=(fake_hour % 24) if fake_hour is not None else now.hour,
-            minute=(fake_minute % 60) if fake_minute is not None else now.minute,
+            hour=(fake_hour % HOURS_PER_DAY) if fake_hour is not None else now.hour,
+            minute=(fake_minute % MINUTES_PER_HOUR) if fake_minute is not None else now.minute,
             second=0,
             microsecond=0,
         )
@@ -244,7 +252,7 @@ class TimeRouter(CustomLogger):
                 if session_id and target != clock_target:
                     _log().info(
                         "TimeRouter: STICKY session=%s… kept/switch to %s (clock says %s)",
-                        session_id[:12],
+                        session_id[:SESSION_LOG_PREFIX],
                         target,
                         clock_target,
                     )
@@ -287,8 +295,8 @@ class TimeRouter(CustomLogger):
                                 _log().info(
                                     "TimeRouter: metadata[%s]=%s%s",
                                     _k,
-                                    _v[:80],
-                                    "…" if len(_v) > 80 else "",
+                                    _v[:LOG_VALUE_MAX],
+                                    "…" if len(_v) > LOG_VALUE_MAX else "",
                                 )
                     for _k in ("session_id", "chat_id", "litellm_session_id", "litellm_trace_id", "user"):
                         if _k in data:
@@ -296,8 +304,8 @@ class TimeRouter(CustomLogger):
                             _log().info(
                                 "TimeRouter: data[%s]=%s%s",
                                 _k,
-                                _v[:80],
-                                "…" if len(_v) > 80 else "",
+                                _v[:LOG_VALUE_MAX],
+                                "…" if len(_v) > LOG_VALUE_MAX else "",
                             )
         except Exception as exc:  # fail-open: never break the request
             _rate_limited_warning("TimeRouter: hook failed, request left unchanged: %r", exc)
