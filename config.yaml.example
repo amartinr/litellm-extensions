@@ -16,9 +16,10 @@
 # The hooks are imported as the modules `time_router` and
 # `reasoning_route_adapter` (source under `time_router/` and
 # `reasoning_route_adapter/`; both must be mounted next to this config at
-# `/app/`) and registered under litellm_settings.callbacks - ORDER MATTERS:
-# time_router first (reroutes the alias), then reasoning_route_adapter
-# (normalizes by the rerouted model).
+# `/app/`) and registered under litellm_settings.callbacks. `time_router`
+# stays first (it reroutes the alias at request level); the adapter's pending
+# migration to the per-deployment hook makes it order-independent (it
+# classifies by the bound deployment).
 
 model_list:
   # Public alias - the only model clients should use. Default deployment points at
@@ -101,8 +102,8 @@ litellm_settings:
   callbacks:
     - 'prometheus'
     - 'time_router.proxy_handler_instance'
-    # AFTER time_router: reads the rerouted model and normalizes reasoning
-    # control to the dialect of the bound route (see DESIGN.md). Rollback:
+    # Normalizes reasoning control to the dialect of the bound deployment
+    # (pending migration to the per-deployment hook; see DESIGN.md). Rollback:
     # REASONING_ADAPTER_DISABLED=1.
     - 'reasoning_route_adapter.proxy_handler_instance'
   custom_prometheus_metadata_labels:

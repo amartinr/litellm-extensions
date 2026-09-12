@@ -1,8 +1,12 @@
 # `reasoning_route_adapter`
 
-LiteLLM pre-call hook (`CustomLogger`), registered AFTER `time_router` so
-`data["model"]` is the post-reroute model. Registered as
-`reasoning_route_adapter.proxy_handler_instance`.
+LiteLLM hook (`CustomLogger`), registered as
+`reasoning_route_adapter.proxy_handler_instance`. Currently a request-level
+pre-call hook (`async_pre_call_hook`) registered after `time_router` so
+`data["model"]` is the post-reroute model; pending migration to the
+per-deployment hook (`async_pre_call_deployment_hook`), at which point it
+classifies by the bound deployment and the registration order stops mattering
+(see `PLAN.md` / `DESIGN.md`).
 
 Normalizes reasoning control to the dialect of the bound route. Never touches
 `messages`. Deterministic, idempotent, fail-open, stateless, no per-request

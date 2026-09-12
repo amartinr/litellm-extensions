@@ -19,6 +19,7 @@ adapter live in
 
 ```
 config.yaml.example                       shared LiteLLM config reference (both hooks)
+hook_config.py                            shared config loader (pending; mount at /app/hook_config.py)
 .env.example                              shared environment reference
 
 time_router/
@@ -47,8 +48,15 @@ volumes:
   - ./reasoning_route_adapter/reasoning_route_adapter.py:/app/reasoning_route_adapter.py
 ```
 
-Registration order matters: `time_router` first (reroutes the alias), then
-`reasoning_route_adapter` (reads the rerouted model). See
+When the shared config loader lands (`hook_config.py`, see PLAN), add it as a
+third mount so both hooks can `import hook_config`:
+`- ./hook_config.py:/app/hook_config.py`.
+
+Registration order: `time_router` first (it reroutes the alias at request
+level). Today `reasoning_route_adapter` reads the rerouted model, so the order
+matters; the pending migration to the per-deployment hook
+([`reasoning_route_adapter/PLAN.md`](reasoning_route_adapter/PLAN.md)) makes it
+order-independent (it will classify by the bound deployment). See
 [`config.yaml.example`](config.yaml.example).
 
 ## Environment
@@ -61,7 +69,10 @@ knobs are documented in each hook's README. Copy
 ## Cross-cutting follow-ups
 
 - Extract the duplicated `CONFIG_PATHS` / config-load / `_log` plumbing shared
-  by both hooks into a common module.
+  by both hooks into a common module (`hook_config`), together with the
+  `model_info.metadata` descriptor builder, the top-level `callback_settings`
+  reader and its validation. See `time_router/PLAN.md` and
+  `reasoning_route_adapter/DESIGN.md` §5.2.
 - Re-validate on LiteLLM upgrades: the hooks depend on `verbose_proxy_logger`,
   the standard-logging metadata whitelist, and pre-call hook semantics
   (pinned to 1.99.0).
