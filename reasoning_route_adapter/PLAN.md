@@ -14,12 +14,12 @@ root values (`"medium"`, `"xhigh"`, `"minimal"`, `"none"`) pass through
 unchanged, and the client must send a value the bound route honors (pi does
 this via its `thinkingLevelMap`). Do not add per-route root normalization.
 
-## P2 — Observability
+## Decision — No custom metrics
 
-Only log lines today. Counters for `kill_switch_rescue` / `drop_thinking` /
-`object_to_native_*` would catch regressions. Constrained by LiteLLM #38660
-(fallback/failure emitters do not populate `custom_prometheus_metadata_labels`);
-scope to success-path metrics first.
+Use LiteLLM's native metrics only; no custom Prometheus counters are added.
+The adapter's actions stay in the logs (one line per transformation), which is
+enough for debugging. (Counters for `kill_switch_rescue` / `drop_thinking` /
+`object_to_native_*` were considered to catch regressions; dropped.)
 
 ## P2 — Malformed `thinking` handling
 
