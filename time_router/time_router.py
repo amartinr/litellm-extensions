@@ -5,123 +5,157 @@ author: A. Martin
 author_url: https://github.com/amartinr
 description: >
     LiteLLM custom pre-call hook (CustomLogger) for the alias
-    `litellm/deepseek-v4-flash`. (1) Time-based routing: DeepSeek peak windows
-    Mon-Fri 01:00-04:00 and 06:00-10:00 UTC (weekends are always off-peak)
-    reroute to `openrouter/deepseek-v4-flash`, otherwise to
-    `deepseek/deepseek-v4-flash`. (2) Sticky sessions: pins each
+    `litellm/deepseek-v4-flash`. (1) Time-based routing: reroutes the alias
+    between the two deployments declared in its
+    `model_info.metadata.time_router.reroute` (peak_target / offpeak_target);
+    the peak schedule is the provider fact declared as `peak_windows` on the
+    offpeak_target entry (days 0=Mon..6=Sun, HH:MM UTC, interval [start, end);
+    weekends are simply not listed). (2) Sticky sessions: pins each
     conversation (keyed on `metadata.session_id`, fed by the Open WebUI pipe's
-    `x-litellm-session-id` header) to its provider while active, so long chats do
-    not flip providers mid-conversation and lose the prompt cache. One-way
-    ratchet while active (direct -> openrouter once at peak; openrouter stays
+    `x-litellm-session-id` header) to its provider while active, so long chats
+    do not flip providers mid-conversation and lose the prompt cache. One-way
+    ratchet while active (direct -> peak once in a peak window; peak stays
     through off-peak); idle beyond the TTL re-evaluates by the clock.
     (3) Labels requests with the config-declared route (`metadata.route` -> the
     `metadata_route` Prometheus label). Register as
     `time_router.proxy_handler_instance` under `litellm_settings.callbacks`.
-    Env knobs: TIME_ROUTER_DEBUG (verbose logs), TIME_ROUTER_FAKE_HOUR (test
-    window boundaries), TIME_ROUTER_FAKE_WEEKDAY (0=Mon..6=Sun, test weekends),
-    TIME_ROUTER_SESSION_TTL (idle TTL, default 900 s).
+    Config is read through the shared `hook_config` loader:
+    per-model facts from `model_info.metadata`, operation knobs from the
+    top-level `callback_settings.time_router` block (session_ttl_s,
+    max_session_entries).
+    Env knobs: TIME_ROUTER_DEBUG (verbose logs), TIME_ROUTER_FAKE_HOUR /
+    TIME_ROUTER_FAKE_MINUTE (test window boundaries), TIME_ROUTER_FAKE_WEEKDAY
+    (0=Mon..6=Sun, test weekends).
 required_litellm_version: 1.99.0
-version: 0.4.2
+version: 0.5.0
 licence: MIT
 """
 
 import os
 import time
-from datetime import datetime, timezone
-import yaml
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+
+import hook_config
 from litellm.integrations.custom_logger import CustomLogger
 
-CONFIG_PATHS = [
-    os.environ.get("LITELLM_CONFIG_FILE", ""),   # env var wins if set
-    "/app/config.yaml",                          # real path
-    "./config.yaml",
-]
-
-ALIAS_MODEL = "litellm/deepseek-v4-flash"
-PEAK_TARGET = "openrouter/deepseek-v4-flash"
-OFFPEAK_TARGET = "deepseek/deepseek-v4-flash"
-
-# Sticky-session policy -------------------------------------------------------
-# After this much inactivity the provider-side prompt cache is presumed cold,
-# so the pin is dropped and routing re-evaluates by the clock.
-SESSION_IDLE_TTL_S = int(os.environ.get("TIME_ROUTER_SESSION_TTL", "900"))  # 15 min
-_session_state: dict[str, dict] = {}  # session_id -> {"route": str, "last_seen": float}
+# Populated by _load_config() at import and refreshed by tests/reloads.
+ROUTE_MAP: dict[str, str] = {}
+ALIASES: dict[str, "AliasRoute"] = {}
+SESSION_TTL_S = 900
+MAX_SESSION_ENTRIES = 128
+_session_state: dict[str, dict] = {}  # session_id -> {"alias", "route", "last_seen"}
 
 
-def _load_route_map():
-    """Builds {model_name: route} from model_info.metadata.route in config.yaml."""
-    for p in CONFIG_PATHS:
-        if p and os.path.exists(p):
-            with open(p) as f:
-                cfg = yaml.safe_load(f)
-            route_map = {}
-            for m in (cfg.get("model_list") or []):
-                name = m.get("model_name")
-                route = (m.get("model_info") or {}).get("metadata", {}).get("route")
-                if name and route:
-                    route_map[name] = route
-            return route_map
-    return {}
+@dataclass(frozen=True)
+class AliasRoute:
+    """Config-declared reroute decision for one alias model_name."""
+
+    peak_target: str
+    offpeak_target: str
+    # (days, start, end) tuples from hook_config.parse_window; days 0=Mon..6=Sun,
+    # start/end HH:MM UTC, interval [start, end).
+    windows: tuple
+
+    def is_peak(self, now: datetime) -> bool:
+        clock = now.time()
+        weekday = now.weekday()
+        return any(weekday in days and start <= clock < end for days, start, end in self.windows)
+
+    def target_at(self, now: datetime) -> str:
+        return self.peak_target if self.is_peak(now) else self.offpeak_target
 
 
-ROUTE_MAP = _load_route_map()
+def _build_aliases(models: dict) -> dict[str, AliasRoute]:
+    """Aliases are the entries declaring `time_router.reroute`. The schedule is
+    read from the offpeak_target entry (the entry that owns the provider fact)."""
+    aliases: dict[str, AliasRoute] = {}
+    for name, desc in models.items():
+        reroute = (desc.get("time_router") or {}).get("reroute")
+        if not reroute:
+            continue
+        offpeak = reroute.get("offpeak_target")
+        schedule = (models.get(offpeak, {}).get("time_router") or {}).get("peak_windows") or []
+        windows = tuple(parsed for parsed in (hook_config.parse_window(raw) for raw in schedule) if parsed)
+        aliases[name] = AliasRoute(
+            peak_target=reroute.get("peak_target"),
+            offpeak_target=offpeak,
+            windows=windows,
+        )
+    return aliases
 
 
-def _utc_hour() -> int:
-    # TIME_ROUTER_FAKE_HOUR lets tests exercise window boundaries on demand.
-    fake = os.environ.get("TIME_ROUTER_FAKE_HOUR")
-    if fake:
-        try:
-            return int(fake) % 24
-        except ValueError:
-            pass
-    return datetime.now(timezone.utc).hour
+def _apply_config(loaded) -> None:
+    global ROUTE_MAP, ALIASES, SESSION_TTL_S, MAX_SESSION_ENTRIES
+    ROUTE_MAP = {name: desc["route"] for name, desc in loaded.models.items() if desc["route"]}
+    ALIASES = _build_aliases(loaded.models)
+    settings = loaded.settings("time_router")
+    SESSION_TTL_S = settings["session_ttl_s"]
+    MAX_SESSION_ENTRIES = settings["max_session_entries"]
 
 
-def _utc_weekday() -> int:
-    # 0=Mon .. 6=Sun. TIME_ROUTER_FAKE_WEEKDAY lets tests exercise weekends.
-    fake = os.environ.get("TIME_ROUTER_FAKE_WEEKDAY")
-    if fake:
-        try:
-            return int(fake) % 7
-        except ValueError:
-            pass
-    return datetime.now(timezone.utc).weekday()
+def _load_config(path: str | None = None) -> None:
+    _apply_config(hook_config.load(path))
 
 
-def _is_peak(hour: int, weekday: int) -> bool:
-    # DeepSeek peak windows: Mon-Fri 01:00-04:00 and 06:00-10:00 UTC.
-    # Weekends have no peak pricing, so they are always off-peak.
-    if weekday >= 5:  # Sat/Sun
-        return False
-    return (1 <= hour < 4) or (6 <= hour < 10)
+_load_config()
 
 
-def _desired_route(hour: int, weekday: int) -> str:
-    return PEAK_TARGET if _is_peak(hour, weekday) else OFFPEAK_TARGET
+def _log():
+    """LiteLLM's proxy logger - shared loader handles the lazy import."""
+    return hook_config.get_logger()
+
+
+_last_warning_at = [0.0]
+_WARNING_INTERVAL_S = 300.0
+
+
+def _rate_limited_warning(msg: str, *args) -> None:
+    """Emit through the proxy logger at most once per interval (fail-open)."""
+    now = time.time()
+    if now - _last_warning_at[0] < _WARNING_INTERVAL_S:
+        return
+    _last_warning_at[0] = now
+    try:
+        _log().warning(msg, *args)
+    except Exception:
+        pass
+
+
+def _fake_int(name: str):
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def _utc_now() -> datetime:
+    """Now in UTC, with TIME_ROUTER_FAKE_* overrides for tests."""
+    now = datetime.now(timezone.utc)
+    fake_weekday = _fake_int("TIME_ROUTER_FAKE_WEEKDAY")
+    if fake_weekday is not None:
+        now += timedelta(days=(fake_weekday % 7 - now.weekday()) % 7)
+    fake_hour = _fake_int("TIME_ROUTER_FAKE_HOUR")
+    fake_minute = _fake_int("TIME_ROUTER_FAKE_MINUTE")
+    if fake_hour is not None or fake_minute is not None:
+        now = now.replace(
+            hour=(fake_hour % 24) if fake_hour is not None else now.hour,
+            minute=(fake_minute % 60) if fake_minute is not None else now.minute,
+            second=0,
+            microsecond=0,
+        )
+    return now
 
 
 def _request_session_id(data: dict):
     md = data.get("metadata")
-    if isinstance(md, dict) and md.get("session_id"):
+    if isinstance(md, dict) and isinstance(md.get("session_id"), str) and md["session_id"]:
         return md["session_id"]
-    return data.get("litellm_session_id")
-
-
-def _log():
-    """LiteLLM's proxy logger - emits JSON lines when `json_logs` is on.
-
-    Lazy import: the hook module is imported early by the proxy; importing
-    proxy_server at module level would risk an import cycle.
-    """
-    try:
-        from litellm.proxy.proxy_server import verbose_proxy_logger
-
-        return verbose_proxy_logger
-    except Exception:
-        from litellm import verbose_logger
-
-        return verbose_logger
+    sid = data.get("litellm_session_id")
+    return sid if isinstance(sid, str) and sid else None
 
 
 class TimeRouter(CustomLogger):
@@ -143,120 +177,124 @@ class TimeRouter(CustomLogger):
         return metadata
 
     # ------------------------------------------------------------------ policy
-    def _pick_route(self, session_id, hour: int, weekday: int) -> str:
+    def _pick_route(self, alias: str, route: AliasRoute, session_id, now: datetime) -> str:
         """Sticky-session route decision for alias traffic.
 
         - No session id            -> stateless hour routing (title gen etc.)
         - New / idle session       -> hour routing, then pinned
-        - Active session pinned to DIRECT crossing INTO peak
-                                   -> switch to OpenRouter ONCE (avoid DeepSeek
-                                      peak prices for the whole active stretch)
-        - Active session pinned to OPENROUTER crossing INTO off-peak
-                                   -> STAY on OpenRouter (keep the warm Baidu
-                                      cache; skipping credit burn is the lesser
-                                      evil). One-way ratchet while active.
+        - Active session pinned to the offpeak target crossing INTO peak
+                                   -> switch to the peak target ONCE
+        - Active session pinned to the peak target crossing INTO off-peak
+                                   -> STAY (keep the warm provider cache;
+                                      one-way ratchet while active)
         """
-        desired = _desired_route(hour, weekday)
+        desired = route.target_at(now)
         if not session_id:
             return desired
         state = _session_state.get(session_id)
-        if state is None:
+        if state is None or state.get("alias") != alias:
             return desired
-        if (time.time() - state["last_seen"]) >= SESSION_IDLE_TTL_S:
+        if (time.time() - state["last_seen"]) >= SESSION_TTL_S:
             # Idle long enough that the provider cache is cold: re-evaluate.
             return desired
         pinned = state["route"]
-        if pinned == OFFPEAK_TARGET:
-            return PEAK_TARGET if desired == PEAK_TARGET else OFFPEAK_TARGET
-        return pinned  # on OpenRouter (peak or off-peak): stay while active
+        if pinned == route.offpeak_target:
+            return route.peak_target if desired == route.peak_target else route.offpeak_target
+        return pinned  # pinned to the peak target: stay while active
 
     @staticmethod
-    def _prune_sessions(now: float, max_entries: int = 128) -> None:
-        if len(_session_state) <= max_entries:
+    def _prune_sessions(now: float) -> None:
+        if len(_session_state) <= MAX_SESSION_ENTRIES:
             return
-        expired = [k for k, v in _session_state.items() if (now - v["last_seen"]) >= SESSION_IDLE_TTL_S]
+        expired = [k for k, v in _session_state.items() if (now - v["last_seen"]) >= SESSION_TTL_S]
         for k in expired:
             _session_state.pop(k, None)
+        overflow = len(_session_state) - MAX_SESSION_ENTRIES
+        if overflow > 0:  # hard cap: evict the least recently seen
+            oldest = sorted(_session_state, key=lambda k: _session_state[k]["last_seen"])[:overflow]
+            for k in oldest:
+                _session_state.pop(k, None)
 
     # ------------------------------------------------------------------ hook
     async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
-        requested = data.get("model")
-        route_label = None
+        try:
+            requested = data.get("model")
+            route_label = None
 
-        if requested == ALIAS_MODEL:
-            hour = _utc_hour()
-            weekday = _utc_weekday()
-            session_id = _request_session_id(data)
-            route = self._pick_route(session_id, hour, weekday)
-            now = time.time()
-            if session_id:
-                _session_state[session_id] = {"route": route, "last_seen": now}
-                self._prune_sessions(now)
-            data["model"] = route
-            route_label = ROUTE_MAP.get(route, "unknown")
-            # Always-on lightweight signal (rare): only when stickiness overrode
-            # the clock, i.e. an ACTIVE session crossed a window boundary.
-            clock_route = _desired_route(hour, weekday)
-            if session_id and route != clock_route:
-                _log().info(
-                    "TimeRouter: STICKY session=%s… kept/switch to %s (clock says %s)",
-                    session_id[:12],
-                    route,
-                    clock_route,
-                )
-            if os.environ.get("TIME_ROUTER_DEBUG"):
-                _log().info(
-                    "TimeRouter: requested=%r target=%r route=%s hour=%s weekday=%s session=%r",
-                    requested,
-                    route,
-                    route_label,
-                    hour,
-                    weekday,
-                    session_id,
-                )
-        elif requested in ROUTE_MAP:
-            # Direct call to a model that declares a route in config.yaml:
-            # label it with the declared route, no rerouting.
-            route_label = ROUTE_MAP[requested]
-            if os.environ.get("TIME_ROUTER_DEBUG"):
-                _log().info(
-                    "TimeRouter: requested=%r target=None route=%s",
-                    requested,
-                    route_label,
-                )
+            if requested in ALIASES:
+                route = ALIASES[requested]
+                now = _utc_now()
+                session_id = _request_session_id(data)
+                target = self._pick_route(requested, route, session_id, now)
+                seen = time.time()
+                if session_id:
+                    _session_state[session_id] = {"alias": requested, "route": target, "last_seen": seen}
+                    self._prune_sessions(seen)
+                data["model"] = target
+                route_label = ROUTE_MAP.get(target, "unknown")
+                # Always-on lightweight signal (rare): only when stickiness overrode
+                # the clock, i.e. an ACTIVE session crossed a window boundary.
+                clock_target = route.target_at(now)
+                if session_id and target != clock_target:
+                    _log().info(
+                        "TimeRouter: STICKY session=%s… kept/switch to %s (clock says %s)",
+                        session_id[:12],
+                        target,
+                        clock_target,
+                    )
+                if os.environ.get("TIME_ROUTER_DEBUG"):
+                    _log().info(
+                        "TimeRouter: requested=%r target=%r route=%s session=%r",
+                        requested,
+                        target,
+                        route_label,
+                        session_id,
+                    )
+            elif requested in ROUTE_MAP:
+                # Direct call to a model that declares a route in config.yaml:
+                # label it with the declared route, no rerouting.
+                route_label = ROUTE_MAP[requested]
+                if os.environ.get("TIME_ROUTER_DEBUG"):
+                    _log().info(
+                        "TimeRouter: requested=%r target=None route=%s",
+                        requested,
+                        route_label,
+                    )
 
-        if route_label is not None:
-            metadata = self._inject_route(data, route_label)
-            if os.environ.get("TIME_ROUTER_DEBUG"):
-                import json as _json
+            if route_label is not None:
+                metadata = self._inject_route(data, route_label)
+                if os.environ.get("TIME_ROUTER_DEBUG"):
+                    import json as _json
 
-                _log().info("TimeRouter: ROUTE_MAP=%s", _json.dumps(ROUTE_MAP))
-                _log().info(
-                    "TimeRouter: metadata after inject=%s",
-                    _json.dumps(metadata, default=str),
-                )
-                _log().info("TimeRouter: data keys=%s", sorted(data.keys()))
-                _md = data.get("metadata")
-                if isinstance(_md, dict):
-                    _log().info("TimeRouter: metadata keys=%s", sorted(_md.keys()))
-                    for _k in ("session_id", "chat_id", "litellm_session_id", "litellm_trace_id", "user_id"):
-                        if _k in _md:
-                            _v = str(_md[_k])
+                    _log().info("TimeRouter: ROUTE_MAP=%s", _json.dumps(ROUTE_MAP))
+                    _log().info(
+                        "TimeRouter: metadata after inject=%s",
+                        _json.dumps(metadata, default=str),
+                    )
+                    _log().info("TimeRouter: data keys=%s", sorted(data.keys()))
+                    _md = data.get("metadata")
+                    if isinstance(_md, dict):
+                        _log().info("TimeRouter: metadata keys=%s", sorted(_md.keys()))
+                        for _k in ("session_id", "chat_id", "litellm_session_id", "litellm_trace_id", "user_id"):
+                            if _k in _md:
+                                _v = str(_md[_k])
+                                _log().info(
+                                    "TimeRouter: metadata[%s]=%s%s",
+                                    _k,
+                                    _v[:80],
+                                    "…" if len(_v) > 80 else "",
+                                )
+                    for _k in ("session_id", "chat_id", "litellm_session_id", "litellm_trace_id", "user"):
+                        if _k in data:
+                            _v = str(data[_k])
                             _log().info(
-                                "TimeRouter: metadata[%s]=%s%s",
+                                "TimeRouter: data[%s]=%s%s",
                                 _k,
                                 _v[:80],
                                 "…" if len(_v) > 80 else "",
                             )
-                for _k in ("session_id", "chat_id", "litellm_session_id", "litellm_trace_id", "user"):
-                    if _k in data:
-                        _v = str(data[_k])
-                        _log().info(
-                            "TimeRouter: data[%s]=%s%s",
-                            _k,
-                            _v[:80],
-                            "…" if len(_v) > 80 else "",
-                        )
+        except Exception as exc:  # fail-open: never break the request
+            _rate_limited_warning("TimeRouter: hook failed, request left unchanged: %r", exc)
         return data
 
 
