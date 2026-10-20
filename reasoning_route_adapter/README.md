@@ -38,8 +38,10 @@ Classification (`_classify`), on the bound deployment:
    deployment overrides the latter to `["deepinfra/fp8"]`);
 3. neither → no-op.
 
-OR-bound (route label `deepinfra/fp8`; the default fallback set also accepts
-`baidu/fp8`):
+OR-bound (declared `reasoning_dialect: "openrouter"`, or a fallback route
+label). The built-in `or_route_labels` default is `["baidu/fp8"]`; the
+reference config **replaces** it with `["deepinfra/fp8"]` — configured lists
+replace the default, they are not merged.
 
 Default behavior (`reasoning_effort_requires_object` absent or `false`):
 
@@ -56,10 +58,14 @@ also translates the root effort to the OR object spelling:
 | Input | Output | Action |
 |---|---|---|
 | `thinking.type == "disabled"` | same OFF object as above | `kill_switch_rescue` |
+| any other `thinking` dict | drop `thinking`; then apply the rows below | `drop_thinking`* |
 | `reasoning` object | pass through; drop a co-present root `reasoning_effort` | `drop_root_effort_for_object` |
 | `reasoning_effort == "none"` | `reasoning = {enabled:false, effort:"none"}` | `root_effort_to_object_off` |
 | known `reasoning_effort` | `reasoning = {enabled:true, effort:<mapped>}` | `root_effort_to_object` |
 | unknown / non-string effort | drop the root effort fail-safe | `drop_unknown_effort` |
+
+\* If an object `reasoning` is also present with a root `reasoning_effort`,
+the branch drops `thinking` and then returns `drop_root_effort_for_object`.
 
 This opt-in exists for OpenRouter model ids whose LiteLLM provider map lags,
 where the raw root `reasoning_effort` is rejected. Use it only on the affected

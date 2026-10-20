@@ -331,14 +331,16 @@ root-effort path for deployments that do not need it.
 
 1. `thinking.type == "disabled"` → same kill-switch rescue as above.
 2. Malformed `thinking` / `reasoning` values → no-op (fail-open).
-3. `reasoning` object present → pass through; delete a co-present root
+3. Any other `thinking` (e.g. `type: "enabled"`) → delete `thinking`
+   (`drop_thinking`); continue with the rules below.
+4. `reasoning` object present → pass through; delete a co-present root
    `reasoning_effort` (`drop_root_effort_for_object`).
-4. Root `reasoning_effort` string:
+5. Root `reasoning_effort` string:
    - `"none"` → `reasoning = {"enabled": false, "effort": "none"}`;
    - known level → `reasoning = {"enabled": true, "effort": <mapped>}`;
    - unknown level → delete the root effort fail-safe.
-5. Non-string root effort → delete it fail-safe.
-6. Nothing reasoning-related present → no-op.
+6. Non-string root effort → delete it fail-safe.
+7. Nothing reasoning-related present → no-op.
 
 This path exists for model ids whose LiteLLM OpenRouter map lags and rejects
 the raw root key (e.g. `deepseek-v4.1-flash-1017`). It is opt-in per
