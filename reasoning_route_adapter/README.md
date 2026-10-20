@@ -20,7 +20,9 @@ on assistant messages). On the OpenRouter route, OR ignores `thinking`
 `reasoning` object and the root `reasoning_effort` (effort level only). The
 adapter rescues the kill switch on OR and translates an incoming OR object on
 the native route. Because it runs per attempt, the rescue also covers a
-`router_settings.fallbacks` redirect to OR.
+`router_settings.fallbacks` redirect to OR. Deployments whose OpenRouter
+provider map rejects the raw root `reasoning_effort` can opt into the OR
+object spelling (see Rules).
 
 ## Rules
 
@@ -35,13 +37,31 @@ Classification (`_classify`), on the bound deployment:
    `["deepseek"]`, `or_route_labels` default `["baidu/fp8"]`);
 3. neither → no-op.
 
-OR-bound (route label `baidu/fp8`):
+OR-bound (route label `baidu/fp8` / `deepinfra/fp8`):
+
+Default behavior (`reasoning_effort_requires_object` absent or `false`):
 
 | Input | Output | Action |
 |---|---|---|
 | `thinking.type == "disabled"` | `reasoning = {enabled:false, effort:"none"}`; drop `thinking` and `reasoning_effort` | `kill_switch_rescue` |
 | any other `thinking.type` | drop `thinking`; no synthesized object | `drop_thinking` |
 | no `thinking` | `reasoning` / `reasoning_effort` untouched | — |
+
+When the bound deployment declares
+`model_info.metadata.reasoning_effort_requires_object: true`, the adapter
+also translates the root effort to the OR object spelling:
+
+| Input | Output | Action |
+|---|---|---|
+| `thinking.type == "disabled"` | same OFF object as above | `kill_switch_rescue` |
+| `reasoning` object | pass through; drop a co-present root `reasoning_effort` | `drop_root_effort_for_object` |
+| `reasoning_effort == "none"` | `reasoning = {enabled:false, effort:"none"}` | `root_effort_to_object_off` |
+| known `reasoning_effort` | `reasoning = {enabled:true, effort:<mapped>}` | `root_effort_to_object` |
+| unknown / non-string effort | drop the root effort fail-safe | `drop_unknown_effort` |
+
+This opt-in exists for OpenRouter model ids whose LiteLLM provider map lags,
+where the raw root `reasoning_effort` is rejected. Use it only on the affected
+deployments; the default keeps the legacy root-effort behavior.
 
 Native-bound (route label `deepseek`); only acts on an incoming OR object:
 
@@ -63,7 +83,9 @@ untouched. Rollback: `REASONING_ADAPTER_DISABLED=1`.
 Read through the shared [`hook_config`](../hook_config.py) loader:
 
 - **Per-model facts** — `model_info.metadata.reasoning_dialect` (primary
-  classification) and `route`; the route-label sets are only the fallback.
+  classification), `route`, and `reasoning_effort_requires_object` (opt-in
+  root-effort-to-object translation); the route-label sets are only the
+  fallback.
 - **Operation knobs** — top-level `callback_settings.reasoning_route_adapter`:
   `warning_interval_s` (default 300), `native_route_labels`, `or_route_labels`.
 
@@ -102,8 +124,9 @@ and the `amartinr/pi-deepseek-reasoning-chain-fix` extension):
 ```
 
 Offline pytest: classification by the bound deployment, OR/native rules,
-idempotency, the fallback-attempt re-normalization, both metadata buckets,
-rollback env, fail-open and config wiring.
+the per-deployment root-effort opt-in, idempotency, the fallback-attempt
+re-normalization, both metadata buckets, rollback env, fail-open and config
+wiring.
 
 ## Probes
 

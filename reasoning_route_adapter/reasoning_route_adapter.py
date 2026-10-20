@@ -19,17 +19,26 @@ description: >
     curl example - the OpenAI-SDK `extra_body` wrapper is an SDK artifact, not
     the wire format LiteLLM forwards). Evidence: probes/, 2026-09-08; DESIGN.md.
 
-    OR-bound (route label "baidu/fp8", OpenRouter -> Baidu fp8):
+    OR-bound (route label "baidu/fp8" / "deepinfra/fp8", OpenRouter):
       - `thinking:{type:"disabled"}` is IGNORED by OR (probed: still reasoned,
         47-57 tokens) -> rescued into the OR contract OFF
         `reasoning:{enabled:false, effort:"none"}` (0 tokens); `thinking` and
         any root `reasoning_effort` are dropped.
-      - `thinking:{type:"enabled"}` is ignored too -> dropped only (OR default
-        is reasoning ON; never synthesize a reasoning object for ON: object
-        effort over-spends on this route while root `reasoning_effort` is
-        cheap - probes 2026-09-08).
-      - an OR `reasoning` object and root `reasoning_effort` pass through
-        (already the OR dialect / cheap on OR).
+      - `thinking:{type:"enabled"}` is ignored too -> dropped.
+      - root `reasoning_effort` is translated into the OR object
+        `reasoning:{enabled:true, effort:<mapped>}` only when the bound
+        deployment declares
+        `model_info.metadata.reasoning_effort_requires_object: true`
+        (LiteLLM's openrouter map lags some new model ids, e.g.
+        deepseek-v4.1-flash-1017 400s on raw root effort 2026-10-20, while the
+        object spelling passes; live: low 41 / high 71 / max 155 reasoning
+        tokens on deepinfra/fp8). `none` maps to the OFF object.
+        Unknown/non-string levels are dropped fail-safe (reasoning stays
+        ON/default) to avoid the 400. When the flag is absent or false, the
+        root effort passes through unchanged (legacy behavior).
+      - an incoming OR `reasoning` object passes through; a co-present root
+        `reasoning_effort` is dropped only for deployments that require the
+        object (the object is canonical and the root would 400).
       - assistant-message `reasoning_content` is never touched (documented OR
         alias for its `reasoning` field).
 
@@ -49,13 +58,14 @@ description: >
     unchanged, warned at most once per interval), stateless, no I/O.
     Rollback: REASONING_ADAPTER_DISABLED=1 (checked per request).
     Config is read through the shared `hook_config` loader: per-model facts
-    from `model_info.metadata`, operation knobs from the top-level
+    from `model_info.metadata` (`route`, `reasoning_dialect`,
+    `reasoning_effort_requires_object`), operation knobs from the top-level
     `callback_settings.reasoning_route_adapter` block (warning_interval_s,
     native_route_labels, or_route_labels).
     Env knobs: REASONING_ADAPTER_DEBUG (verbose logs incl. before/after
     reasoning keys), REASONING_ADAPTER_DISABLED.
 required_litellm_version: 1.99.0
-version: 0.3.0
+version: 0.4.0
 licence: MIT
 """
 
@@ -73,6 +83,7 @@ from litellm.integrations.custom_logger import CustomLogger
 # Populated by _load_config() at import and refreshed by tests/reloads.
 ROUTE_MAP: dict[str, str] = {}
 DIALECT_MAP: dict[str, str] = {}
+EFFORT_REQUIRES_OBJECT: dict[str, bool] = {}
 NATIVE_ROUTE_LABELS: set = {"deepseek"}
 OR_ROUTE_LABELS: set = {"baidu/fp8"}
 _NEVER_WARNED_AT = 0.0
@@ -83,6 +94,16 @@ _WARNING_INTERVAL_S = hook_config.DEFAULT_WARNING_INTERVAL_S
 # classification source). A route label outside both sets is unknown -> no-op.
 # Defaults live in hook_config.SETTINGS_DEFAULTS; override via
 # callback_settings.reasoning_route_adapter.
+
+# Root effort values that OpenRouter honors on DeepSeek models that opt into
+# object effort (GET /models 2026-10-20 for deepseek-v4.1-flash-1017:
+# supported_efforts ["max", "high", "low", "none"], default "high").
+# Kept in code: provider protocol fact, not operator-tunable.
+# "medium"/"xhigh"/"minimal" aliases collapse through EFFORT_MAP so OWUI's
+# Medium button ("medium") still grades instead of 400ing.
+# "none" is handled by the OFF branch. Unknown values -> dropped fail-safe.
+OR_OBJECT_EFFORTS = frozenset({"low", "high", "max"})
+
 
 # OR-object effort -> native root `reasoning_effort`. DeepSeek's own collapse
 # table (low/medium/high/xhigh/max, identical for v4-flash and v4-pro, per
@@ -100,9 +121,15 @@ EFFORT_MAP = {
 
 
 def _apply_config(loaded) -> None:
-    global ROUTE_MAP, DIALECT_MAP, NATIVE_ROUTE_LABELS, OR_ROUTE_LABELS, _WARNING_INTERVAL_S
+    global ROUTE_MAP, DIALECT_MAP, EFFORT_REQUIRES_OBJECT
+    global NATIVE_ROUTE_LABELS, OR_ROUTE_LABELS, _WARNING_INTERVAL_S
     ROUTE_MAP = {name: d["route"] for name, d in loaded.models.items() if d["route"]}
     DIALECT_MAP = {name: d["reasoning_dialect"] for name, d in loaded.models.items() if d["reasoning_dialect"]}
+    EFFORT_REQUIRES_OBJECT = {
+        name: d["reasoning_effort_requires_object"]
+        for name, d in loaded.models.items()
+        if d.get("reasoning_effort_requires_object")
+    }
     settings = loaded.settings("reasoning_route_adapter")
     NATIVE_ROUTE_LABELS = set(settings["native_route_labels"])
     OR_ROUTE_LABELS = set(settings["or_route_labels"])
@@ -141,9 +168,11 @@ def deployment_context(kwargs: dict) -> dict:
 
     LiteLLM exposes `model_info` and `deployment_model_name` under `metadata`
     for most call types (and `litellm_metadata` for a few router methods), so
-    both buckets are checked. Returns `{"dialect", "route", "name"}`.
+    both buckets are checked. Returns `{"dialect", "route", "name",
+    "requires_object"}`.
     """
     dialect = route = name = None
+    requires_object = None
     for bucket_name in ("metadata", "litellm_metadata"):
         bucket = kwargs.get(bucket_name)
         if not isinstance(bucket, dict):
@@ -153,10 +182,20 @@ def deployment_context(kwargs: dict) -> dict:
         if isinstance(meta, dict):
             dialect = meta.get("reasoning_dialect", dialect)
             route = meta.get("route", route)
+            declared = meta.get("reasoning_effort_requires_object")
+            if isinstance(declared, bool):
+                requires_object = declared
         candidate = bucket.get("deployment_model_name")
         if isinstance(candidate, str) and not name:
             name = candidate
-    return {"dialect": dialect, "route": route, "name": name}
+    if requires_object is None and isinstance(name, str):
+        requires_object = EFFORT_REQUIRES_OBJECT.get(name, False)
+    return {
+        "dialect": dialect,
+        "route": route,
+        "name": name,
+        "requires_object": bool(requires_object),
+    }
 
 
 class ReasoningRouteAdapter(CustomLogger):
@@ -208,22 +247,83 @@ class ReasoningRouteAdapter(CustomLogger):
 
     # ------------------------------------------------------------------ OR-bound rules (DESIGN 4.4)
     @staticmethod
-    def _normalize_or_bound(kwargs: dict):
-        """Make native-dialect control behave on OR. Returns an action name or None."""
+    def _normalize_or_bound_root(kwargs: dict):
+        """Legacy OR behavior: only drop `thinking` and rescue the kill switch."""
         thinking = kwargs.get("thinking")
         if not isinstance(thinking, dict):
             return None  # OR object / root effort / nothing -> leave as-is
         if thinking.get("type") == "disabled":
-            # OR ignores `thinking` (row 1 of DESIGN 1.3); the OR contract OFF
-            # object is its documented kill switch (row 2).
             kwargs["reasoning"] = {"enabled": False, "effort": "none"}
             kwargs.pop("thinking", None)
             kwargs.pop("reasoning_effort", None)
             return "kill_switch_rescue"
-        # enabled (or any other type value): OR ignores `thinking` and defaults
-        # to reasoning ON; drop it. Never synthesize an object for ON (rows 3-4).
         kwargs.pop("thinking", None)
         return "drop_thinking"
+
+    @staticmethod
+    def _is_reasoning_object(value) -> bool:
+        """True for a well-formed OR reasoning object (at least one known key)."""
+        return isinstance(value, dict) and (
+            isinstance(value.get("enabled"), bool)
+            or isinstance(value.get("effort"), str)
+        )
+
+    @classmethod
+    def _normalize_or_bound_object(cls, kwargs: dict):
+        """OR behavior for deployments that require the reasoning object."""
+        thinking = kwargs.get("thinking")
+        reasoning = kwargs.get("reasoning")
+        effort = kwargs.get("reasoning_effort")
+
+        # Native kill switch first: OR ignores `thinking`; the OR contract OFF
+        # object is its documented kill switch.
+        if isinstance(thinking, dict) and thinking.get("type") == "disabled":
+            kwargs["reasoning"] = {"enabled": False, "effort": "none"}
+            kwargs.pop("thinking", None)
+            kwargs.pop("reasoning_effort", None)
+            return "kill_switch_rescue"
+
+        # Fail-open on malformed values instead of building a hybrid payload.
+        if "thinking" in kwargs and thinking is not None and not isinstance(thinking, dict):
+            return None
+        if "reasoning" in kwargs and reasoning is not None and not isinstance(reasoning, dict):
+            return None
+        if isinstance(reasoning, dict) and not cls._is_reasoning_object(reasoning):
+            return None
+
+        action = None
+        if isinstance(thinking, dict):
+            kwargs.pop("thinking", None)
+            action = "drop_thinking"
+
+        # An incoming OR object is canonical: drop a co-present root effort.
+        if isinstance(reasoning, dict):
+            if "reasoning_effort" in kwargs:
+                kwargs.pop("reasoning_effort", None)
+                return "drop_root_effort_for_object"
+            return action
+
+        # No object: translate root effort into the OR object spelling.
+        if isinstance(effort, str):
+            if effort == "none":
+                kwargs["reasoning"] = {"enabled": False, "effort": "none"}
+                kwargs.pop("reasoning_effort", None)
+                return "root_effort_to_object_off"
+            mapped = EFFORT_MAP.get(effort, effort)
+            if mapped in OR_OBJECT_EFFORTS:
+                kwargs["reasoning"] = {"enabled": True, "effort": mapped}
+                kwargs.pop("reasoning_effort", None)
+                return "root_effort_to_object"
+            # Unknown level: drop fail-safe rather than 400 the whole request.
+            kwargs.pop("reasoning_effort", None)
+            return action or "drop_unknown_effort"
+
+        if "reasoning_effort" in kwargs:
+            # Present but non-string (e.g. 5, None): drop fail-safe.
+            kwargs.pop("reasoning_effort", None)
+            return action or "drop_unknown_effort"
+
+        return action
 
     # ------------------------------------------------------------------ native-bound rules (DESIGN 4.5)
     @staticmethod
@@ -273,7 +373,12 @@ class ReasoningRouteAdapter(CustomLogger):
                 return {k: kwargs.get(k) for k in ("thinking", "reasoning", "reasoning_effort")}
 
             before = _reasoning_keys() if debug else None
-            normalize = self._normalize_or_bound if side == "or" else self._normalize_native
+            if side == "native":
+                normalize = self._normalize_native
+            elif context.get("requires_object"):
+                normalize = self._normalize_or_bound_object
+            else:
+                normalize = self._normalize_or_bound_root
             action = normalize(kwargs)
             if action is None:
                 if debug:

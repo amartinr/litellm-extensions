@@ -1,7 +1,7 @@
 # DESIGN — Reasoning-payload normalization at the LiteLLM gateway
 
 Status: implemented on the per-deployment hook, wired to the shared
-`hook_config` loader; offline pytest green (38). Live checks of §6.2 pending
+`hook_config` loader; offline pytest green. Live checks of §6.2 pending
 gateway deployment.
 Branch: `main` (repo `litellm-extensions`).
 Reference code: `../time_router/time_router.py` (module layout, registration;
@@ -189,6 +189,14 @@ OR-bound ON path (§4.4 rule 3) reaches a provider that does not honour the
 level reliably. Do not build cost logic on the level — use the kill switch
 and `max_tokens`.
 
+Scope note (2026-10-20): LiteLLM's OpenRouter map can also lag a new model id
+and reject the raw root `reasoning_effort` entirely (observed with
+`deepseek-v4.1-flash-1017` on `deepinfra/fp8`). Such deployments can opt into
+the OR object spelling via
+`model_info.metadata.reasoning_effort_requires_object: true` (§4.4, §5.1);
+this is a per-deployment workaround, not a change to the provider-level
+finding above.
+
 ## 2. Goals
 
 1. Each upstream receives reasoning control it honors, for the payload the
@@ -201,8 +209,9 @@ and `max_tokens`.
 ## 3. Non-goals
 
 - Renaming `reasoning_content` → `reasoning` on OR-bound messages (§1.3, row 5).
-- Translating root `reasoning_effort` into the OR object on OR-bound requests
-  (§1.3, rows 3–4).
+- Translating root `reasoning_effort` globally on OR-bound requests. The
+  adapter only does it for deployments that opt in via
+  `reasoning_effort_requires_object` (§4.4, §5.1).
 - Changing what clients send; per-model callback config (unsupported).
 - Solving the object-ON over-spend on OR (client-contract decision, tracked
   separately).
@@ -284,24 +293,40 @@ Do not hardcode model names; everything comes from `config.yaml`
 (`reasoning_dialect` preferred, `route` as fallback — same source as
 `time_router`).
 
-### 4.4 OR-bound rules (route label `baidu/fp8`)
+### 4.4 OR-bound rules (route labels `baidu/fp8`, `deepinfra/fp8`)
 
-Goal: make native-dialect control behave on OR. Rules, evaluated on the
-request payload, in order:
+Goal: make native-dialect control behave on OR without changing the legacy
+root-effort path for deployments that do not need it.
+
+**Default path** (`reasoning_effort_requires_object` absent or `false`):
 
 1. `thinking` present:
    - `thinking.type == "disabled"` → **rescue**: set
      `reasoning = {"enabled": false, "effort": "none"}`; delete `thinking`;
-     delete `reasoning_effort` if present. (OR ignores `thinking`, row 1;
-     object OFF is its documented contract, row 2.)
+     delete `reasoning_effort` if present.
    - any other `thinking.type`, including `"enabled"` → delete `thinking`
-     only (OR ignores it; reasoning defaults ON; never synthesize an object —
-     rows 3–4).
-2. `reasoning` present → leave as-is (already OR dialect).
-3. Root `reasoning_effort` present (no `thinking`) → leave as-is (cheap on
-   OR, row 4). The *level* itself is not reliably honoured by the provider
-   once forwarded — see §1.4.
+     only (OR ignores it; reasoning defaults ON; never synthesize an object).
+2. `reasoning` present → leave as-is.
+3. Root `reasoning_effort` present (no `thinking`) → leave as-is (the level
+   itself is not reliably honoured — see §1.4).
 4. Nothing reasoning-related present → no-op.
+
+**Object-effort path** (`reasoning_effort_requires_object: true`):
+
+1. `thinking.type == "disabled"` → same kill-switch rescue as above.
+2. Malformed `thinking` / `reasoning` values → no-op (fail-open).
+3. `reasoning` object present → pass through; delete a co-present root
+   `reasoning_effort` (`drop_root_effort_for_object`).
+4. Root `reasoning_effort` string:
+   - `"none"` → `reasoning = {"enabled": false, "effort": "none"}`;
+   - known level → `reasoning = {"enabled": true, "effort": <mapped>}`;
+   - unknown level → delete the root effort fail-safe.
+5. Non-string root effort → delete it fail-safe.
+6. Nothing reasoning-related present → no-op.
+
+This path exists for model ids whose LiteLLM OpenRouter map lags and rejects
+the raw root key (e.g. `deepseek-v4.1-flash-1017`). It is opt-in per
+deployment; there is no global behavior change.
 
 Example (pi fallback to OR, reasoning off):
 
@@ -377,8 +402,9 @@ Example (probe/future client with OR object, OFF, native route):
 ### 5.1 Surfaces
 
 - **Per-model facts** → `model_info.metadata` (already used):
-  `reasoning_dialect` (§4.3 primary classification) and `route` (label +
-  fallback taxonomy) — see `../config.yaml.example`.
+  `reasoning_dialect` (§4.3 primary classification), `route` (label +
+  fallback taxonomy), and `reasoning_effort_requires_object` (opt-in
+  root-effort-to-object translation, §4.4) — see `../config.yaml.example`.
 - **Hook operation knobs** → `callback_settings.reasoning_route_adapter` at
   the **top level** of `config.yaml`:
 
@@ -443,17 +469,20 @@ Pure-function checks in the repo venv (stdlib only):
    native-bound, `openrouter/...` → OR-bound), `deployment_model_name` →
    `DIALECT_MAP`/`ROUTE_MAP` fallback for entries without the declaration,
    unknown deployment or unrecognized declared dialect → no-op.
-2. §4.4 rule 1: disabled → object OFF + cleanup; other types → drop
+2. §4.4 default path: disabled → object OFF + cleanup; other types → drop
    thinking. Before/after byte-exact vs the examples.
-3. §4.5 OFF and ON translations incl. the vocabulary table rows.
-4. Idempotency: applying twice → second is a no-op (returns unchanged, no
+3. §4.4 object-effort path: the opt-in translates known levels, maps
+   `none` to OFF, drops unknown/non-string levels, and drops a co-present
+   root effort when an object is present.
+4. §4.5 OFF and ON translations incl. the vocabulary table rows.
+5. Idempotency: applying twice → second is a no-op (returns unchanged, no
    log).
-5. Fail-open: malformed values (e.g. `thinking: "junk"`) → unchanged data,
+6. Fail-open: malformed values (e.g. `thinking: "junk"`) → unchanged data,
    no exception.
-6. Native-dialect payloads without an object (root `reasoning_effort`, and
+7. Native-dialect payloads without an object (root `reasoning_effort`, and
    `thinking` on the native route) pass through byte-identical. On the OR
    route `thinking` is normalized per §4.4 rule 1 and is excluded.
-7. `messages` untouched in every case.
+8. `messages` untouched in every case.
 
 The offline tests use the real `hook_config` with a fixture `config.yaml`
 (`_load_config`) and monkeypatch `ROUTE_MAP`/`DIALECT_MAP` for isolated case
@@ -480,6 +509,11 @@ Reuse `probes/` conventions (`probes/reasoning_format_tolerance.py` with
    `openrouter/...`, with the client payload carrying `thinking:disabled` —
    the per-deployment hook must run on the fallback attempt and rescue the
    kill switch to `reasoning:{enabled:false, effort:"none"}`.
+6. Object-effort opt-in: on a deployment with
+   `reasoning_effort_requires_object: true`, a root `reasoning_effort` must
+   produce HTTP 200 (no 400) and reasoning tokens in the expected range for
+   the level; a co-present `reasoning` object must survive with the root key
+   removed.
 
 ## 7. Resolved decisions and remaining open questions
 

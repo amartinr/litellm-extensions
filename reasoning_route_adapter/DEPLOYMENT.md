@@ -124,6 +124,13 @@ Coupling summary:
   byte-equivalent outcome; reasoning OFF → `kill_switch_rescue` to the OR
   OFF object — 0 tokens (was 47–57 and billed).
 
+> If the bound OpenRouter model rejects the raw root `reasoning_effort`
+> (LiteLLM's provider map lags the model id), set
+> `model_info.metadata.reasoning_effort_requires_object: true` on that
+> deployment. The adapter then sends the effort inside OpenRouter's
+> `reasoning` object instead. Leave it unset/false for routes that accept the
+> root key.
+
 > Effort **level** caveat (measured 2026-09-12, LiteLLM v1.99.0): the level
 > is not usable through the gateway. On native, LiteLLM discards it
 > ([litellm #27439]); on OR it is forwarded but the provider honours it

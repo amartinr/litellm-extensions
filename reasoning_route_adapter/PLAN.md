@@ -6,13 +6,23 @@ by the bound deployment, the shared `hook_config` loader (per-model descriptors
 + `callback_settings.reasoning_route_adapter` knobs), fail-open, and the pytest
 suite with real asserts. See `DESIGN.md` §4–§7 and the root README.
 
-## Decision — Root `reasoning_effort` is the client's responsibility
+## Decision — Root effort translation is per-deployment opt-in
 
-The adapter normalizes the dialect of the bound route; it does not keep a
-second, per-target vocabulary for root `reasoning_effort`. Out-of-vocabulary
-root values (`"medium"`, `"xhigh"`, `"minimal"`, `"none"`) pass through
-unchanged, and the client must send a value the bound route honors (pi does
-this via its `thinkingLevelMap`). Do not add per-route root normalization.
+The adapter normalizes the dialect of the bound route. Translating root
+`reasoning_effort` into the OR object is a workaround for OpenRouter model ids
+whose LiteLLM provider map lags and rejects the raw root key. It is therefore
+opt-in per deployment via:
+
+```yaml
+model_info:
+  metadata:
+    reasoning_effort_requires_object: true
+```
+
+When the flag is absent or false, root `reasoning_effort` passes through
+unchanged (legacy behavior), out-of-vocabulary values included. Do not apply
+the object spelling globally: other OpenRouter models may still accept the
+root key, and their effort vocabulary is not necessarily `low/high/max`.
 
 ## Decision — No custom metrics
 
@@ -54,17 +64,21 @@ switch is reliable; the effort **level** is not. Full data and sources in
   3. tests for both; then re-check `DESIGN` §4.4 rule 3 ("cheap on OR" no
      longer a safe assumption) and `EFFORT_MAP` end-to-end.
 
-  The OR route needs nothing: ON already sends root `reasoning_effort` only
-  (the adapter drops `thinking`), and the provider-side erratic behaviour is
-  out of LiteLLM's hands (§1.4).
+  The OR route needs nothing for the default path: ON already sends root
+  `reasoning_effort` only (the adapter drops `thinking`), and the
+  provider-side erratic behaviour is out of LiteLLM's hands (§1.4).
+  Deployments that opt into `reasoning_effort_requires_object` use the object
+  spelling instead; that path is tracked by the live checks in §6.2.
 - **Do not** build cost logic on the level: rely on the kill switch
   (0 tokens) and `max_tokens`.
 
 ## P2 — Malformed `thinking` handling
 
-`_normalize_or_bound` drops `thinking` for any type other than `"disabled"`,
-including malformed values (`{"type":"foo"}`). Decide whether to no-op on
-unrecognized types instead of silently dropping.
+The default OR path drops `thinking` for any type other than `"disabled"`,
+including malformed values (`{"type":"foo"}`). The object-effort path is
+fail-open on malformed `thinking`/`reasoning` values. Decide whether the
+default path should also no-op on unrecognized types instead of silently
+dropping them.
 
 ## P2 — Live acceptance §6.2
 

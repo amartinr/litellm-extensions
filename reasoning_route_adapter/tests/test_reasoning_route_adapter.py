@@ -16,12 +16,14 @@ UNLISTED = "anthropic/claude-x"
 HANDLER = adapter.proxy_handler_instance
 
 
-def _kwargs(deployment, dialect=None, route=None, bucket="metadata", **extra):
+def _kwargs(deployment, dialect=None, route=None, bucket="metadata", requires_object=None, **extra):
     meta = {}
     if dialect is not None:
         meta["reasoning_dialect"] = dialect
     if route is not None:
         meta["route"] = route
+    if requires_object is not None:
+        meta["reasoning_effort_requires_object"] = requires_object
     payload = {
         "model": f"{deployment}-provider",
         bucket: {"deployment_model_name": deployment, "model_info": {"metadata": meta}},
@@ -50,6 +52,7 @@ def configured(monkeypatch):
     monkeypatch.setattr(adapter, "DIALECT_MAP", {NATIVE: "deepseek", OR: "openrouter", ALIAS: "openrouter"})
     monkeypatch.setattr(adapter, "NATIVE_ROUTE_LABELS", {"deepseek"})
     monkeypatch.setattr(adapter, "OR_ROUTE_LABELS", {"baidu/fp8"})
+    monkeypatch.setattr(adapter, "EFFORT_REQUIRES_OBJECT", {})
     return adapter
 
 
@@ -58,6 +61,7 @@ def restore_config():
     saved = (
         adapter.ROUTE_MAP,
         adapter.DIALECT_MAP,
+        adapter.EFFORT_REQUIRES_OBJECT,
         adapter.NATIVE_ROUTE_LABELS,
         adapter.OR_ROUTE_LABELS,
         adapter._WARNING_INTERVAL_S,
@@ -66,6 +70,7 @@ def restore_config():
     (
         adapter.ROUTE_MAP,
         adapter.DIALECT_MAP,
+        adapter.EFFORT_REQUIRES_OBJECT,
         adapter.NATIVE_ROUTE_LABELS,
         adapter.OR_ROUTE_LABELS,
         adapter._WARNING_INTERVAL_S,
@@ -135,11 +140,111 @@ def test_or_drop_thinking_enabled(configured):
     assert "reasoning" not in out
 
 
-def test_or_keeps_root_effort(configured):
+def test_or_root_effort_legacy_passthrough(configured):
+    kwargs = _kwargs(OR, dialect="openrouter", reasoning_effort="high")
+    snapshot = copy.deepcopy(kwargs)
+    assert _run(kwargs) == snapshot
+
+
+def test_or_thinking_enabled_keeps_root_effort_legacy(configured):
     kwargs = _kwargs(OR, dialect="openrouter", thinking={"type": "enabled"}, reasoning_effort="high")
     out = _run(kwargs)
     assert "thinking" not in out
     assert out["reasoning_effort"] == "high"
+    assert "reasoning" not in out
+
+
+def test_or_object_plus_root_legacy_passthrough(configured):
+    kwargs = _kwargs(
+        OR, dialect="openrouter",
+        reasoning={"enabled": True, "effort": "low"},
+        reasoning_effort="max",
+    )
+    snapshot = copy.deepcopy(kwargs)
+    assert _run(kwargs) == snapshot
+
+
+def test_or_root_effort_translates_to_object(configured):
+    kwargs = _kwargs(
+        OR, dialect="openrouter", requires_object=True,
+        thinking={"type": "enabled"}, reasoning_effort="high",
+    )
+    out = _run(kwargs)
+    assert "thinking" not in out
+    assert out["reasoning"] == {"enabled": True, "effort": "high"}
+    assert "reasoning_effort" not in out
+
+
+@pytest.mark.parametrize(
+    "effort,mapped",
+    [("low", "low"), ("high", "high"), ("max", "max"),
+     ("medium", "high"), ("xhigh", "high"), ("minimal", "low")],
+)
+def test_or_root_effort_vocabulary_maps_to_object(configured, effort, mapped):
+    kwargs = _kwargs(OR, dialect="openrouter", requires_object=True, reasoning_effort=effort)
+    out = _run(kwargs)
+    assert out["reasoning"] == {"enabled": True, "effort": mapped}
+    assert "reasoning_effort" not in out
+
+
+def test_or_root_effort_none_maps_to_object_off(configured):
+    kwargs = _kwargs(OR, dialect="openrouter", requires_object=True, reasoning_effort="none")
+    out = _run(kwargs)
+    assert out["reasoning"] == {"enabled": False, "effort": "none"}
+    assert "reasoning_effort" not in out
+
+
+@pytest.mark.parametrize("effort", ["bogus", "ultra", 5, None])
+def test_or_root_effort_unknown_dropped_failsafe(configured, effort):
+    extra = {} if effort is None else {"reasoning_effort": effort}
+    kwargs = _kwargs(OR, dialect="openrouter", requires_object=True, **extra)
+    out = _run(kwargs)
+    assert "reasoning_effort" not in out
+    assert "reasoning" not in out  # stays ON/default, no 400
+
+
+def test_or_root_effort_none_value_dropped_failsafe(configured):
+    kwargs = _kwargs(OR, dialect="openrouter", requires_object=True, reasoning_effort=None)
+    out = _run(kwargs)
+    assert "reasoning_effort" not in out
+    assert "reasoning" not in out
+
+
+def test_or_object_wins_over_root_effort(configured):
+    kwargs = _kwargs(
+        OR, dialect="openrouter", requires_object=True,
+        reasoning={"enabled": True, "effort": "low"},
+        reasoning_effort="max",
+    )
+    out = _run(kwargs)
+    assert out["reasoning"] == {"enabled": True, "effort": "low"}
+    assert "reasoning_effort" not in out
+
+
+def test_or_object_transport_rescues_kill_switch(configured):
+    kwargs = _kwargs(
+        OR, dialect="openrouter", requires_object=True,
+        thinking={"type": "disabled"}, reasoning_effort="low",
+    )
+    out = _run(kwargs)
+    assert out["reasoning"] == {"enabled": False, "effort": "none"}
+    assert "thinking" not in out
+    assert "reasoning_effort" not in out
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"thinking": "junk", "reasoning_effort": "high"},
+        {"reasoning": "junk", "reasoning_effort": "high"},
+        {"reasoning": {"enabled": "yes"}, "reasoning_effort": "high"},
+        {"reasoning": {}, "reasoning_effort": "high"},
+    ],
+)
+def test_or_object_transport_fails_open_on_malformed(configured, extra):
+    kwargs = _kwargs(OR, dialect="openrouter", requires_object=True, **extra)
+    snapshot = copy.deepcopy(kwargs)
+    assert _run(kwargs) == snapshot
 
 
 @pytest.mark.parametrize(
@@ -147,7 +252,6 @@ def test_or_keeps_root_effort(configured):
     [
         {"reasoning": {"enabled": False, "effort": "none"}},
         {"reasoning": {"enabled": True, "effort": "low"}},
-        {"reasoning_effort": "low"},
         {},
     ],
 )
@@ -195,6 +299,12 @@ def test_native_dialect_passthrough(configured):
 def test_idempotent(configured):
     payloads = [
         _kwargs(OR, dialect="openrouter", thinking={"type": "disabled"}, reasoning_effort="low"),
+        _kwargs(OR, dialect="openrouter", reasoning_effort="max"),
+        _kwargs(OR, dialect="openrouter", requires_object=True, reasoning_effort="max"),
+        _kwargs(
+            OR, dialect="openrouter", requires_object=True,
+            reasoning={"enabled": True, "effort": "low"}, reasoning_effort="max",
+        ),
         _kwargs(NATIVE, dialect="deepseek", reasoning={"enabled": False, "effort": "none"}),
         _kwargs(NATIVE, dialect="deepseek", reasoning={"enabled": True, "effort": "medium"}),
     ]
@@ -216,11 +326,45 @@ def test_fallback_attempt_renormalizes(configured):
     # Router swaps the bound deployment for the fallback attempt.
     kwargs["metadata"] = {
         "deployment_model_name": OR,
-        "model_info": {"metadata": {"reasoning_dialect": "openrouter", "route": "baidu/fp8"}},
+        "model_info": {"metadata": {
+            "reasoning_dialect": "openrouter",
+            "route": "baidu/fp8",
+            "reasoning_effort_requires_object": True,
+        }},
     }
     _run(kwargs)
     assert kwargs["reasoning"] == {"enabled": False, "effort": "none"}
     assert "thinking" not in kwargs
+
+
+def test_fallback_attempt_translates_root_effort(configured):
+    kwargs = _kwargs(NATIVE, dialect="deepseek", reasoning_effort="high")
+    _run(kwargs)
+    assert kwargs["reasoning_effort"] == "high"  # native attempt: passthrough
+
+    kwargs["metadata"] = {
+        "deployment_model_name": OR,
+        "model_info": {"metadata": {
+            "reasoning_dialect": "openrouter",
+            "route": "baidu/fp8",
+            "reasoning_effort_requires_object": True,
+        }},
+    }
+    _run(kwargs)
+    assert kwargs["reasoning"] == {"enabled": True, "effort": "high"}
+    assert "reasoning_effort" not in kwargs
+
+
+def test_requires_object_falls_back_to_config_map(configured, monkeypatch):
+    monkeypatch.setattr(adapter, "EFFORT_REQUIRES_OBJECT", {OR: True})
+    kwargs = {
+        "model": "x",
+        "metadata": {"deployment_model_name": OR},
+        "reasoning_effort": "high",
+    }
+    out = _run(kwargs)
+    assert out["reasoning"] == {"enabled": True, "effort": "high"}
+    assert "reasoning_effort" not in out
 
 
 # ------------------------------------------------------------------ robustness
@@ -267,8 +411,8 @@ def _write_config(tmp_path, **overrides):
     cfg = {
         "model_list": [
             {"model_name": NATIVE, "model_info": {"metadata": {"route": "deepseek", "reasoning_dialect": "deepseek"}}},
-            {"model_name": OR, "model_info": {"metadata": {"route": "baidu/fp8", "reasoning_dialect": "openrouter"}}},
-            {"model_name": ALIAS, "model_info": {"metadata": {"route": "baidu/fp8", "reasoning_dialect": "openrouter"}}},
+            {"model_name": OR, "model_info": {"metadata": {"route": "baidu/fp8", "reasoning_dialect": "openrouter", "reasoning_effort_requires_object": True}}},
+            {"model_name": ALIAS, "model_info": {"metadata": {"route": "baidu/fp8", "reasoning_dialect": "openrouter", "reasoning_effort_requires_object": True}}},
         ],
         "callback_settings": {
             "reasoning_route_adapter": {
@@ -288,6 +432,7 @@ def test_load_config_wires_maps_and_knobs(tmp_path, restore_config):
     adapter._load_config(str(_write_config(tmp_path)))
     assert adapter.ROUTE_MAP[NATIVE] == "deepseek"
     assert adapter.DIALECT_MAP[OR] == "openrouter"
+    assert adapter.EFFORT_REQUIRES_OBJECT == {OR: True, ALIAS: True}
     assert adapter.NATIVE_ROUTE_LABELS == {"deepseek"}
     assert adapter.OR_ROUTE_LABELS == {"baidu/fp8"}
     assert adapter._WARNING_INTERVAL_S == 7
@@ -299,3 +444,25 @@ def test_load_config_defaults_when_block_absent(tmp_path, restore_config):
     assert adapter._WARNING_INTERVAL_S == 300
     assert adapter.NATIVE_ROUTE_LABELS == {"deepseek"}
     assert adapter.OR_ROUTE_LABELS == {"baidu/fp8"}
+
+
+def test_load_config_custom_or_label_without_dialect(tmp_path, restore_config):
+    cfg = {
+        "model_list": [
+            {
+                "model_name": "openrouter/custom",
+                "model_info": {"metadata": {"route": "deepinfra/fp8"}},
+            }
+        ],
+        "callback_settings": {
+            "reasoning_route_adapter": {"or_route_labels": ["deepinfra/fp8"]}
+        },
+    }
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(cfg))
+    adapter._load_config(str(path))
+
+    context = adapter.deployment_context(
+        {"metadata": {"deployment_model_name": "openrouter/custom"}}
+    )
+    assert adapter.ReasoningRouteAdapter._classify(context)[0] == "or"

@@ -10,6 +10,9 @@
 #     reasoning_content) or "openrouter" (the reasoning object).
 #     reasoning_route_adapter classifies by it (the route-label sets in the
 #     hook are only the fallback for entries without the declaration)
+#   - an OpenRouter deployment whose provider map rejects root
+#     `reasoning_effort` can opt into the OR object spelling with
+#     model_info.metadata.reasoning_effort_requires_object: true
 #   - the alias entry declares model_info.metadata.time_router.reroute
 #     (peak_target / offpeak_target); the offpeak_target entry owns the
 #     provider schedule model_info.metadata.time_router.peak_windows
@@ -50,6 +53,10 @@ model_list:
         reasoning_dialect: "openrouter"  # alias default deployment is OR; if it
                                         # ever reaches the adapter un-rewritten,
                                         # the OR rules apply
+        # Set true only for models that reject the raw root `reasoning_effort`
+        # and require the OR `reasoning` object (e.g. a new model id whose
+        # LiteLLM provider map lags). Leave unset/false for the default path.
+        # reasoning_effort_requires_object: true
         time_router:
           reroute:
             peak_target: "openrouter/deepseek-v4-flash"
@@ -96,6 +103,9 @@ model_list:
       metadata:
         route: "baidu/fp8"
         reasoning_dialect: "openrouter"
+        # Set true only for models that reject the raw root `reasoning_effort`
+        # and require the OR `reasoning` object. See the alias entry above.
+        # reasoning_effort_requires_object: true
 
   # Any extra models are fine; entries with a declared route get labeled.
   - model_name: deepseek/deepseek-v4-pro

@@ -118,6 +118,17 @@ def validate_models(models: dict[str, dict]) -> list[str]:
     return errors
 
 
+def _bool_metadata(meta: dict, key: str, model_name: str) -> bool:
+    """Read an optional boolean model fact, defaulting to False on bad input."""
+    value = meta.get(key, False)
+    if isinstance(value, bool):
+        return value
+    get_logger().error(
+        "hook_config: %s: %s must be a bool -> false", model_name, key
+    )
+    return False
+
+
 def parse_config(cfg: dict) -> tuple[dict[str, dict], dict]:
     """(models, raw callback_settings) from a parsed config. Pure, no I/O."""
     models: dict[str, dict] = {}
@@ -129,6 +140,9 @@ def parse_config(cfg: dict) -> tuple[dict[str, dict], dict]:
         models[name] = {
             "route": meta.get("route"),
             "reasoning_dialect": meta.get("reasoning_dialect"),
+            "reasoning_effort_requires_object": _bool_metadata(
+                meta, "reasoning_effort_requires_object", name
+            ),
             "time_router": meta.get("time_router") or {},
         }
 

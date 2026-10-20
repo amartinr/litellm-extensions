@@ -35,7 +35,7 @@ def valid_config():
                     ]
                 },
             ),
-            _entry("openrouter/deepseek-v4-flash", route="baidu/fp8", reasoning_dialect="openrouter"),
+            _entry("openrouter/deepseek-v4-flash", route="baidu/fp8", reasoning_dialect="openrouter", reasoning_effort_requires_object=True),
         ],
         "callback_settings": {"time_router": {"session_ttl_s": 60, "max_session_entries": 8}},
     }
@@ -81,6 +81,8 @@ def test_parse_config_builds_descriptors(valid_config):
     }
     assert models["deepseek/deepseek-v4-flash"]["route"] == "deepseek"
     assert models["deepseek/deepseek-v4-flash"]["reasoning_dialect"] == "deepseek"
+    assert models["deepseek/deepseek-v4-flash"]["reasoning_effort_requires_object"] is False
+    assert models["openrouter/deepseek-v4-flash"]["reasoning_effort_requires_object"] is True
     assert models["litellm/deepseek-v4-flash"]["time_router"]["reroute"]["peak_target"] == (
         "openrouter/deepseek-v4-flash"
     )
@@ -107,6 +109,19 @@ def test_parse_config_valid_reroute_is_kept(valid_config, logs):
     models, _ = hook_config.parse_config(valid_config)
     assert models["litellm/deepseek-v4-flash"]["time_router"]["reroute"]
     assert logs.messages == []
+
+
+def test_parse_config_invalid_requires_object_falls_back(valid_config, logs):
+    valid_config["model_list"][2]["model_info"]["metadata"][
+        "reasoning_effort_requires_object"
+    ] = "yes"
+    models, _ = hook_config.parse_config(valid_config)
+
+    assert models["openrouter/deepseek-v4-flash"]["reasoning_effort_requires_object"] is False
+    assert any(
+        level == "error" and "reasoning_effort_requires_object" in text
+        for level, text in logs.messages
+    )
 
 
 # ------------------------------------------------------------------ validation
