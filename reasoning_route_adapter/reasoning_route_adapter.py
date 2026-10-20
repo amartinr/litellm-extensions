@@ -99,17 +99,22 @@ _WARNING_INTERVAL_S = hook_config.DEFAULT_WARNING_INTERVAL_S
 # object effort (GET /models 2026-10-20 for deepseek-v4.1-flash-1017:
 # supported_efforts ["max", "high", "low", "none"], default "high").
 # Kept in code: provider protocol fact, not operator-tunable.
-# "medium"/"xhigh"/"minimal" aliases collapse through EFFORT_MAP so OWUI's
-# Medium button ("medium") still grades instead of 400ing.
+# "medium"/"xhigh"/"minimal"/"ultra" aliases collapse through EFFORT_MAP
+# so OWUI's Medium button ("medium") still grades instead of 400ing.
 # "none" is handled by the OFF branch. Unknown values -> dropped fail-safe.
 OR_OBJECT_EFFORTS = frozenset({"low", "high", "max"})
 
 
-# OR-object effort -> native root `reasoning_effort`. DeepSeek's own collapse
-# table (low/medium/high/xhigh/max, identical for v4-flash and v4-pro, per
-# api-docs.deepseek.com/guides/thinking_mode) plus OR's "minimal" alias.
-# "none" is handled by the OFF branch. Unknown values -> omit the effort key.
-# Provider protocol fact, probe-backed: keep in code, do not move to config.
+# Effort canonicalization table, used in both directions: OR-object effort ->
+# native root `reasoning_effort` (§4.5) and root effort -> OR object effort
+# (§4.4, opt-in). The left side is DeepSeek's documented collapse-table
+# vocabulary (minimal/low/medium/high/xhigh/max/ultra) plus OpenRouter's
+# gateway aliases; the right side is DeepSeek's canonical levels
+# (low/high/max), which are also the only efforts the affected OR models
+# advertise. "none" is handled by the OFF branch. Unknown values -> omit the
+# key (native) or drop the effort fail-safe (object path).
+# Provider protocol fact (api-docs.deepseek.com/guides/thinking_mode,
+# 2026-10-20): keep in code, do not move to config.
 EFFORT_MAP = {
     "low": "low",
     "medium": "high",
@@ -117,6 +122,7 @@ EFFORT_MAP = {
     "xhigh": "high",
     "max": "max",
     "minimal": "low",
+    "ultra": "max",
 }
 
 

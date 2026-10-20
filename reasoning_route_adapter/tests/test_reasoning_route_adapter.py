@@ -178,7 +178,8 @@ def test_or_root_effort_translates_to_object(configured):
 @pytest.mark.parametrize(
     "effort,mapped",
     [("low", "low"), ("high", "high"), ("max", "max"),
-     ("medium", "high"), ("xhigh", "high"), ("minimal", "low")],
+     ("medium", "high"), ("xhigh", "high"), ("minimal", "low"),
+     ("ultra", "max")],
 )
 def test_or_root_effort_vocabulary_maps_to_object(configured, effort, mapped):
     kwargs = _kwargs(OR, dialect="openrouter", requires_object=True, reasoning_effort=effort)
@@ -194,7 +195,7 @@ def test_or_root_effort_none_maps_to_object_off(configured):
     assert "reasoning_effort" not in out
 
 
-@pytest.mark.parametrize("effort", ["bogus", "ultra", 5, None])
+@pytest.mark.parametrize("effort", ["bogus", 5, None])
 def test_or_root_effort_unknown_dropped_failsafe(configured, effort):
     extra = {} if effort is None else {"reasoning_effort": effort}
     kwargs = _kwargs(OR, dialect="openrouter", requires_object=True, **extra)
@@ -271,7 +272,9 @@ def test_native_object_off(configured):
 
 @pytest.mark.parametrize(
     "effort,mapped",
-    [("low", "low"), ("high", "high"), ("max", "max"), ("medium", "high"), ("xhigh", "high"), ("minimal", "low")],
+    [("low", "low"), ("high", "high"), ("max", "max"),
+     ("medium", "high"), ("xhigh", "high"), ("minimal", "low"),
+     ("ultra", "max")],
 )
 def test_native_object_on_vocabulary(configured, effort, mapped):
     kwargs = _kwargs(NATIVE, dialect="deepseek", reasoning={"enabled": True, "effort": effort})

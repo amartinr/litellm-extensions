@@ -374,6 +374,7 @@ translate an incoming OR object so OFF/effort behave on native (row 2).
      | `low`, `high`, `max` | same |
      | `medium`, `xhigh` | `high` |
      | `minimal` | `low` |
+     | `ultra` | `max` |
      | `none` | handled by the OFF branch |
 2. `thinking` present (native dialect) → leave as-is (native honors it).
 3. Root `reasoning_effort` present → leave as-is.

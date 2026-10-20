@@ -74,7 +74,9 @@ Native-bound (route label `deepseek`); only acts on an incoming OR object:
 | `enabled` absent / not bool | unchanged | — |
 
 `EFFORT_MAP`: `low→low`, `medium→high`, `high→high`, `xhigh→high`, `max→max`,
-`minimal→low`. Unmappable → `thinking` enabled without `reasoning_effort`.
+`minimal→low`, `ultra→max`. Unmappable → `thinking` enabled without
+`reasoning_effort`. The same table canonicalizes root effort → OR object
+effort on the opt-in path.
 This is a provider protocol fact (probe-backed); it stays in code, not config.
 
 The native dialect (`thinking` / root `reasoning_effort`) passes through
