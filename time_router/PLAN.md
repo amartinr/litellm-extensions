@@ -40,12 +40,17 @@ full uncached context on OR. At 300k context this is not negligible.
 
 ### Cost model
 
-Rates (`../config.yaml.example`, USD/token):
+> Historical cost model: the rates below are from the former Baidu route.
+> The current `config.yaml.example` uses DeepInfra dynamic pricing (`usage.cost`,
+> no static overrides), so re-run this simulation with the real DeepInfra rates
+> before taking the decision.
+
+Rates at measurement time (former config, USD/token):
 
 | | input (cold) | cache-read | output |
 |---|---|---|---|
 | native DeepSeek | 0.00000022 | 0.000000007 | 0.00000066 |
-| OR -> Baidu | 0.00000004998 | 0.000000009996 | 0.00000009996 |
+| OR -> Baidu (historical) | 0.00000004998 | 0.000000009996 | 0.00000009996 |
 
 - stay native: `N * (C * p_cache + T * p_out)`
 - switch to OR: `C * q_in + T * q_out + (N-1) * (C * q_cache + T * q_out)`
@@ -71,15 +76,16 @@ Sensitivity:
 
 - native peak cache-read **x2** -> break-even at ~**6-7 turns** (switch wins
   after);
-- OR/Baidu **does not cache** -> OR pays full input every turn; staying wins
-  massively (N=10: stay 0.0276 vs switch 0.1509).
+- OR/Baidu **did not cache** in that model -> OR pays full input every turn;
+  staying wins massively (N=10: stay 0.0276 vs switch 0.1509). Re-check
+  DeepInfra caching before reusing this result.
 
 ### Unknowns to resolve before deciding
 
 1. Native DeepSeek **cache-read rate during peak** (does peak raise it above
    OR's?). This is the pivot: it decides whether warm native stays cheaper.
-2. Does the **OR/Baidu route cache** the prompt? If not, switching a large
-   context is clearly worse.
+2. Does the **current OR/DeepInfra route cache** the prompt? If not, switching
+   a large context is clearly worse.
 3. Typical output/reasoning tokens per turn (OR output is 6.6x cheaper, which
    can flip the per-turn comparison).
 
@@ -107,7 +113,7 @@ Sensitivity:
 ### How to resolve
 
 1. Get the native peak cache-read rate (DeepSeek price sheet) and confirm
-   whether OR/Baidu caches (provider docs or a live probe).
+   whether OR/DeepInfra caches (provider docs or a live probe).
 2. Re-run the simulation with real rates.
 3. Pick an option. If B, add `switch_context_tokens` to
    `callback_settings.time_router` (+ default, type check, docs, tests) and

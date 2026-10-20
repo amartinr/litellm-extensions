@@ -39,39 +39,36 @@
 model_list:
   # Public alias - the only model clients should use. Default deployment points at
   # a safe provider: if the hook is ever disabled, alias traffic still routes.
-  - model_name: litellm/deepseek-v4-flash
+  - model_name: litellm/deepseek-flash
     litellm_params:
-      model: deepseek/deepseek-v4-flash-0731
+      model: openrouter/deepseek/deepseek-v4.1-flash-1017
       api_base: https://openrouter.ai/api/v1
       api_key: os.environ/OPENROUTER_API_KEY
-      input_cost_per_token: 0.00000004998
-      output_cost_per_token: 0.00000009996
-      cache_read_input_token_cost: 0.000000009996
+      # no cost overrides: OR returns usage.cost
     model_info:
       metadata:
-        route: "baidu/fp8"
+        route: "deepinfra/fp8"
         reasoning_dialect: "openrouter"  # alias default deployment is OR; if it
                                         # ever reaches the adapter un-rewritten,
                                         # the OR rules apply
-        # Set true only for models that reject the raw root `reasoning_effort`
-        # and require the OR `reasoning` object (e.g. a new model id whose
-        # LiteLLM provider map lags). Leave unset/false for the default path.
-        # reasoning_effort_requires_object: true
+        # This model rejects the raw root `reasoning_effort`; the adapter sends
+        # the effort inside OpenRouter's `reasoning` object instead.
+        reasoning_effort_requires_object: true
         time_router:
           reroute:
-            peak_target: "openrouter/deepseek-v4-flash"
-            offpeak_target: "deepseek/deepseek-v4-flash"
+            peak_target: "openrouter/deepseek-flash"
+            offpeak_target: "deepseek/deepseek-flash"
 
-  # Off-peak target (deepseek direct API).
-  - model_name: deepseek/deepseek-v4-flash
+  # Off-peak target (DeepSeek direct API).
+  - model_name: deepseek/deepseek-flash
     litellm_params:
-      model: deepseek/deepseek-v4-flash
+      model: deepseek/deepseek-flash
       api_key: os.environ/DEEPSEEK_API_KEY
       api_base: https://api.deepseek.com/v1
-      input_cost_per_token: 0.00000022
-      output_cost_per_token: 0.00000066
-      cache_read_input_token_cost: 0.000000007
-      num_retries: 2
+      input_cost_per_token: 0.00000015
+      output_cost_per_token: 0.0000006
+      cache_read_input_token_cost: 0.000000003
+      num_retries: 1
       timeout: 10
     model_info:
       metadata:
@@ -86,26 +83,26 @@ model_list:
               start: "06:00"
               end: "10:00"
 
-  # Peak target (via OpenRouter -> Baidu Qianfan).
-  - model_name: openrouter/deepseek-v4-flash
+  # Peak target (OpenRouter -> DeepInfra fp8).
+  - model_name: openrouter/deepseek-flash
     litellm_params:
-      model: deepseek/deepseek-v4-flash-0731
+      model: openrouter/deepseek/deepseek-v4.1-flash-1017
       api_base: https://openrouter.ai/api/v1
       api_key: os.environ/OPENROUTER_API_KEY
-      input_cost_per_token: 0.00000004998
-      output_cost_per_token: 0.00000009996
-      cache_read_input_token_cost: 0.000000009996
+      # no cost overrides: OR returns usage.cost
       extra_body:
         provider:
-          order: ["baidu/fp8"]
+          order: ["deepinfra/fp8"]
           allow_fallbacks: false
     model_info:
+      max_input_tokens: 1310720
+      max_output_tokens: 943718
+      max_tokens: 943718
       metadata:
-        route: "baidu/fp8"
+        route: "deepinfra/fp8"
         reasoning_dialect: "openrouter"
-        # Set true only for models that reject the raw root `reasoning_effort`
-        # and require the OR `reasoning` object. See the alias entry above.
-        # reasoning_effort_requires_object: true
+        # Same opt-in as the alias: this upstream rejects root effort.
+        reasoning_effort_requires_object: true
 
   # Any extra models are fine; entries with a declared route get labeled.
   - model_name: deepseek/deepseek-v4-pro
@@ -116,6 +113,7 @@ model_list:
       input_cost_per_token: 0.00000066
       output_cost_per_token: 0.00000198
       cache_read_input_token_cost: 0.000000022
+      num_retries: 1
     model_info:
       metadata:
         route: "deepseek"
@@ -143,7 +141,7 @@ callback_settings:
   reasoning_route_adapter:
     warning_interval_s: 300
     native_route_labels: ["deepseek"]
-    or_route_labels: ["baidu/fp8"]
+    or_route_labels: ["deepinfra/fp8"]
 
 litellm_settings:
   callbacks:
@@ -164,4 +162,4 @@ litellm_settings:
 router_settings:
   # Example: degrade to the peak target if the off-peak one fails.
   fallbacks:
-    - deepseek/deepseek-v4-flash: ["openrouter/deepseek-v4-flash"]
+    - deepseek/deepseek-flash: ["openrouter/deepseek-flash"]

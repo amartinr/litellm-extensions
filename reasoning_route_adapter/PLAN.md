@@ -41,10 +41,14 @@ switch is reliable; the effort **level** is not. Full data and sources in
   `reasoning_effort` ([litellm #27439](https://github.com/BerriAI/litellm/issues/27439));
   every non-`none` level = default (`high`). The adapter's `EFFORT_MAP`
   output is therefore inert on native — only its `thinking` part acts.
-- **OR** (`openrouter/...`): the level is forwarded but the provider
-  (`streamlake/fp8`) honours it erratically (inverted / no ordering,
+- **OR** (`openrouter/...`): at measurement time the provider
+  (`streamlake/fp8`) honoured the level erratically (inverted / no ordering,
   σ 200–455). Reproduced via the OR object, so it is provider-side, not the
-  LiteLLM path.
+  LiteLLM path. The current deployment uses `deepinfra/fp8`; the 2026-10-20
+  live measurements there are ordered (low 41 / high 71 / max 155 reasoning
+  tokens), so the object-effort opt-in is enabled for
+  `deepseek-v4.1-flash-1017`. Do not generalize those numbers to other
+  pinned providers.
 - **Follow-up (P2)**: track [litellm PR #40717](https://github.com/BerriAI/litellm/pull/40717)
   (open, 2026-09-11), which forwards `reasoning_effort` on the native path
   but **only when no explicit `thinking` toggle is present**. pi's `compat`
@@ -87,7 +91,8 @@ Normal path verified (probe 4, `probes/gateway_contract.py`, 4/4): OR +
 deployment), native + `thinking:disabled` → 0 tokens, defaults reason.
 
 Still to run: native OR-object OFF → 0 tokens; native OR-object ON →
-low-range; regression against `REASONING_ADAPTER_DISABLED=1`; and the fallback
-path (native failure → OR), which needs
+low-range; regression against `REASONING_ADAPTER_DISABLED=1`; the object-effort
+opt-in on `deepinfra/fp8` (root effort → 200, expected token range); and the
+fallback path (native failure → OR), which needs
 `general_settings.dangerously_allow_mock_testing_request_params` or a broken
 primary (see `probes/README.md` probe 4).

@@ -1,7 +1,7 @@
 # `time_router`
 
 LiteLLM pre-call hook (`CustomLogger`) for the alias
-`litellm/deepseek-v4-flash`. Registered as
+`litellm/deepseek-flash`. Registered as
 `time_router.proxy_handler_instance` under `litellm_settings.callbacks`.
 
 ## Behavior

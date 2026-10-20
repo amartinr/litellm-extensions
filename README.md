@@ -1,13 +1,13 @@
 # litellm-extensions
 
 Monorepo of LiteLLM pre-call hooks for a DB-less proxy (v1.99.0) in front of
-DeepSeek (native) and OpenRouter → Baidu fp8.
+DeepSeek (native) and OpenRouter → DeepInfra fp8.
 
 ## Hooks
 
 | Hook | Directory | Purpose |
 |---|---|---|
-| `time_router` | [`time_router/`](time_router/) | Clock-based rerouting of the `litellm/deepseek-v4-flash` alias, session stickiness, and `metadata.route` labeling |
+| `time_router` | [`time_router/`](time_router/) | Clock-based rerouting of the `litellm/deepseek-flash` alias, session stickiness, and `metadata.route` labeling |
 | `reasoning_route_adapter` | [`reasoning_route_adapter/`](reasoning_route_adapter/) | Normalizes reasoning control to the dialect of the bound route |
 
 Each hook has its own `README.md` (behavior, configuration, environment) and

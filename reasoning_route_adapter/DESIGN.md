@@ -22,15 +22,15 @@ DeepSeek models through two upstreams with different reasoning dialects:
 
 | Upstream | model_list entry | reasoning control (chat completions) | assistant-message reasoning |
 |---|---|---|---|
-| Native DeepSeek (`api.deepseek.com/v1`) | `deepseek/deepseek-v4-flash`, `deepseek/deepseek-v4-pro` | `thinking: {type: enabled\|disabled}` + root `reasoning_effort: low\|high\|max` | `reasoning_content` (required on every assistant message of a tool-calling history; missing → 400 on the raw API) |
-| OpenRouter (Baidu fp8) | `openrouter/deepseek-v4-flash` (upstream `deepseek/deepseek-v4-flash-0731`, `provider.order: ["baidu/fp8"]`) | OR object `reasoning: {enabled, effort}` (per-model metadata: `supported_efforts ["max","high","low"]`, `default_effort "high"`, `mandatory false`) | `reasoning` (canonical) or `reasoning_content` (documented alias, "functions identically") |
+| Native DeepSeek (`api.deepseek.com/v1`) | `deepseek/deepseek-flash`, `deepseek/deepseek-v4-pro` | `thinking: {type: enabled\|disabled}` + root `reasoning_effort: low\|high\|max` | `reasoning_content` (required on every assistant message of a tool-calling history; missing → 400 on the raw API) |
+| OpenRouter (DeepInfra fp8) | `openrouter/deepseek-flash` (upstream `deepseek/deepseek-v4.1-flash-1017`, `provider.order: ["deepinfra/fp8"]`) | OR object `reasoning: {enabled, effort}` (per-model metadata: `supported_efforts ["max","high","low","none"]`, `default_effort "high"`, `mandatory false`) | `reasoning` (canonical) or `reasoning_content` (documented alias, "functions identically") |
 
 The `time_router` hook (request-level pre-call, registered first) reroutes the
-public alias `litellm/deepseek-v4-flash` to one of the two upstreams by clock
+public alias `litellm/deepseek-flash` to one of the two upstreams by clock
 and session stickiness. It must stay at request level: it chooses the
 deployment by rewriting `data["model"]` before routing.
-`router_settings.fallbacks` can also redirect `deepseek/deepseek-v4-flash` →
-`openrouter/deepseek-v4-flash` after a failure. The adapter runs on the
+`router_settings.fallbacks` can also redirect `deepseek/deepseek-flash` →
+`openrouter/deepseek-flash` after a failure. The adapter runs on the
 per-deployment pre-call hook (`async_pre_call_deployment_hook`, §4.1), so it
 sees the deployment bound for each attempt — including retries and fallback
 steps.
@@ -55,11 +55,11 @@ reasoning control at all); they never send the OR `reasoning` object:
   disables reasoning, root `reasoning_effort` when the user sets a level
   (both keys may coexist, per the DeepSeek curl example). Model config
   static in `~/.pi/agent/models.json`:
-  - alias `litellm/deepseek-v4-flash` → the main path: time_router reroutes
+  - alias `litellm/deepseek-flash` → the main path: time_router reroutes
     it, so in peak windows native-dialect payloads land on OR — the
     adapter's active normalization path.
   - LiteLLM configured in pi as a `deepseek` provider requesting the
-    gateway entry `deepseek/deepseek-v4-flash` → served native always
+    gateway entry `deepseek/deepseek-flash` → served native always
     (time_router labels only; no rerouting, hence no peak avoidance on this
     path). Native dialect against the native API: no normalization needed.
     It reaches OR only when `router_settings.fallbacks` redirects after a
@@ -95,7 +95,7 @@ reasoning control at all); they never send the OR `reasoning` object:
   dialect assumed above; the adapter's peak-hour fix is coupled to it (deploy
   together). The extension is scoped to `deepseek/...` ids and does not cover
   the alias model unless it is added.
-- **Open WebUI pipe (`agent_loop_guard`)** → `litellm/deepseek-v4-flash`
+- **Open WebUI pipe (`agent_loop_guard`)** → `litellm/deepseek-flash`
   (alias, rerouted by `time_router`). Sends assistant messages with
   `reasoning_content`; sends **no** reasoning control params (OWUI filters
   do not run on pipe models; its extension keeps the history
@@ -111,7 +111,11 @@ for a pi provider keyed `openrouter` pointed at the gateway (see above).
 
 ### 1.3 Measured behavior driving the design (live, effort low; `probes/`, 2026-09-08)
 
-| # | Payload control | Native DeepSeek | OR → Baidu |
+> Historical note: these measurements were taken on the former Baidu/streamlake
+> route. The current reference deployment uses DeepInfra fp8; the provider
+> findings remain useful, but the exact token counts are provider-specific.
+
+| # | Payload control | Native DeepSeek | OR → Baidu (historical) |
 |---|---|---|---|
 | 1 | `thinking:{type:"disabled"}` | honored (native kill-switch; 0 deltas verified in companion repo) | **ignored** — still reasoned, 47–57 reasoning tokens, 3 runs |
 | 2 | `reasoning:{enabled:false, effort:"none"}` | **ignored** — still reasoned, 152/49 tokens, 2 runs | honored — 0 tokens, 3+ runs |
@@ -122,23 +126,30 @@ for a pi provider keyed `openrouter` pointed at the gateway (see above).
 
 Derived rules (do not deviate without new evidence):
 
-- The **only** control a current client sends that a route mishandles is
-  `thinking:{type:"disabled"}` landing on OR (row 1): the user asked for no
-  reasoning and pays for it silently. This is the problem this hook fixes.
-- The OR object must **never** be synthesized for ON on the OR route
-  (rows 3–4): `reasoning:{effort:...}` over-spends there while root
-  `reasoning_effort` is cheap.
+- The native control a current client sends that the OR route mishandles is
+  `thinking:{type:"disabled"}` (row 1): the user asked for no reasoning and
+  pays for it silently. This is the primary problem this hook fixes. The
+  current DeepInfra model additionally rejects the raw root
+  `reasoning_effort`; the per-deployment opt-in below covers that case.
+- The OR object is **not** synthesized for ON by default (rows 3–4): the
+  historical Baidu route over-spent on `reasoning:{effort:...}` while root
+  `reasoning_effort` was cheap. The opt-in
+  `reasoning_effort_requires_object` path exists only for model ids whose
+  root key is rejected (current DeepInfra); use it per deployment.
 - Assistant messages are **never** rewritten: `reasoning_content` is native
   on DeepSeek and an accepted alias on OR (row 5). No
   `reasoning_content` → `reasoning` rename (Option A decision).
 - On the native route, native control already works (row 1 native column);
   only an incoming OR object needs translation (row 2 native column).
 
-### 1.4 Reasoning-effort *level* is ineffective through this gateway (measured 2026-09-12, LiteLLM v1.99.0)
+### 1.4 Reasoning-effort level: historical provider caveat (measured 2026-09-12, LiteLLM v1.99.0)
 
 Follow-up measurement after the `openrouter/` provider-prefix change (see
-`DEPLOYMENT.md`). Summary: on **both** routes only the ON/OFF kill switch is
-reliable; the effort **level** (`low`/`high`/`max`) is not.
+`DEPLOYMENT.md`). At that time, on **both** routes only the ON/OFF kill switch
+was reliable; the effort **level** (`low`/`high`/`max`) was not. The current
+DeepInfra route shows ordered levels in the 2026-10-20 checks (low 41 / high
+71 / max 155), but the provider-specific caveat below still applies to other
+pinned providers.
 
 - **Native route** (`deepseek/...`, provider `deepseek`): LiteLLM's
   `DeepSeekChatConfig.map_openai_params()` uses `reasoning_effort` only to
@@ -157,11 +168,14 @@ reliable; the effort **level** (`low`/`high`/`max`) is not.
   test sending the level via the OR object `reasoning:{effort:...}`
   (bypassing LiteLLM's `max→xhigh` remap) reproduced the same inversion, so
   it is the provider, not the LiteLLM path.
-- **Provider caveat**: `streamlake/fp8` is the pinned provider here. The
-  public production analysis *OpenRouter's Hidden Chaos* (18M messages)
-  reports the same ("some providers ignored the knob entirely"), and
+- **Provider caveat**: at measurement time, `streamlake/fp8` was the pinned
+  provider; the current deployment uses `deepinfra/fp8`. The public production
+  analysis *OpenRouter's Hidden Chaos* (18M messages) reports the same
+  provider-side variability ("some providers ignored the knob entirely"), and
   OpenRouter's docs list effort levels as officially supported for
-  OpenAI/Grok only.
+  OpenAI/Grok only. The 2026-10-20 DeepInfra measurements (low 41 / high 71 /
+  max 155 reasoning tokens) are ordered, but this does not invalidate the
+  provider-specific caveat for other pinned providers.
 - **Vocabulary split in OR metadata**: the floating ids
   `deepseek/deepseek-v4-flash` / `-pro` expose `supported_efforts:
   ["xhigh","high"]` (2 levels), while the pinned `-0731` / `-pro-0813`
@@ -184,10 +198,11 @@ reliable; the effort **level** (`low`/`high`/`max`) is not.
   adapter-side, forward-compatible — is in `PLAN.md`).
 
 Consequence: `object_to_native_on` (§4.5) emits a `reasoning_effort` that
-LiteLLM **discards** on native, so only its `thinking` part takes effect; the
-OR-bound ON path (§4.4 rule 3) reaches a provider that does not honour the
-level reliably. Do not build cost logic on the level — use the kill switch
-and `max_tokens`.
+LiteLLM **discards** on native, so only its `thinking` part takes effect. On
+the historical OR route the provider did not honour the level reliably; the
+current DeepInfra checks are ordered, but do not generalize that to other
+providers. Do not build cost logic on the level — use the kill switch and
+`max_tokens`.
 
 Scope note (2026-10-20): LiteLLM's OpenRouter map can also lag a new model id
 and reject the raw root `reasoning_effort` entirely (observed with
@@ -284,8 +299,9 @@ Config-driven, two layers, evaluated on the **bound deployment** (never on
 - **Fallback — route-label taxonomy.** When `model_info` is absent (e.g.
   non-router SDK calls), classify by
   `deployment_model_name = kwargs[metadata]["deployment_model_name"]` against
-  `DIALECT_MAP` / `ROUTE_MAP` and the label sets (defaults native
-  `{"deepseek"}`, OR `{"baidu/fp8"}`).
+  `DIALECT_MAP` / `ROUTE_MAP` and the label sets (native default
+  `{"deepseek"}`, OR default `{"baidu/fp8"}`; the reference deployment
+  overrides the OR set to `{"deepinfra/fp8"}`).
 - No deployment metadata (unlisted models, direct SDK calls) → **no-op**
   (return `kwargs` unchanged; DEBUG log).
 
@@ -331,10 +347,10 @@ deployment; there is no global behavior change.
 Example (pi fallback to OR, reasoning off):
 
 ```json
-// in:  { "model": "openrouter/deepseek-v4-flash",
+// in:  { "model": "openrouter/deepseek-flash",
 //        "thinking": { "type": "disabled" },
 //        "reasoning_effort": "low" }
-// out: { "model": "openrouter/deepseek-v4-flash",
+// out: { "model": "openrouter/deepseek-flash",
 //        "reasoning": { "enabled": false, "effort": "none" } }
 ```
 
@@ -370,9 +386,9 @@ translate an incoming OR object so OFF/effort behave on native (row 2).
 Example (probe/future client with OR object, OFF, native route):
 
 ```json
-// in:  { "model": "deepseek/deepseek-v4-flash",
+// in:  { "model": "deepseek/deepseek-flash",
 //        "reasoning": { "enabled": false, "effort": "none" } }
-// out: { "model": "deepseek/deepseek-v4-flash",
+// out: { "model": "deepseek/deepseek-flash",
 //        "thinking": { "type": "disabled" } }
 ```
 
@@ -413,7 +429,7 @@ Example (probe/future client with OR object, OFF, native route):
     reasoning_route_adapter:
       warning_interval_s: 300
       native_route_labels: ["deepseek"]
-      or_route_labels: ["baidu/fp8"]
+      or_route_labels: ["deepinfra/fp8"]   # default: ["baidu/fp8"]
   ```
 
   v1.99.0 reads `config.get("callback_settings")` in `proxy_server.py` and
@@ -495,9 +511,10 @@ root reasoning keys.
 Reuse `probes/` conventions (`probes/reasoning_format_tolerance.py` with
 `LITELLM_MODEL=...` for per-route runs). Expected after deployment:
 
-1. OR route (`openrouter/deepseek-v4-flash`) with body
-   `thinking:{type:"disabled"}` → **0 reasoning tokens** (was 47–57).
-2. Native route (`deepseek/deepseek-v4-flash`) with body
+1. OR route (`openrouter/deepseek-flash`) with body
+   `thinking:{type:"disabled"}` → **0 reasoning tokens** (was 47–57 on the
+   historical Baidu route).
+2. Native route (`deepseek/deepseek-flash`) with body
    `reasoning:{enabled:false, effort:"none"}` → **0 reasoning tokens**
    (was 152/49).
 3. Native route with `reasoning:{enabled:true, effort:"low"}` → low-range
@@ -543,8 +560,10 @@ Non-retryable errors (400/401/403/404) fall back immediately; retryable ones
 ## 8. Evidence references
 
 - `probes/reasoning_format_tolerance.py`, `probes/tool_replay_tolerance.py`,
-  `probes/README.md` (results recorded 2026-09-08, commits on `main`).
-- OR metadata for `deepseek/deepseek-v4-flash-0731`: `GET
+  `probes/README.md` (historical results recorded 2026-09-08 on the Baidu
+  route; current route is DeepInfra fp8).
+- OR metadata for `deepseek/deepseek-v4.1-flash-1017` (current) and
+  `deepseek/deepseek-v4-flash-0731` (historical): `GET
   https://openrouter.ai/api/v1/models` (public).
 - DeepSeek thinking-mode docs (toggle/effort contract, collapse table,
   `reasoning_content` 400 rule): `api-docs.deepseek.com/guides/thinking_mode/`.

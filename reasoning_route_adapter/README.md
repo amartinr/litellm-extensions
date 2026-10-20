@@ -34,10 +34,12 @@ Classification (`_classify`), on the bound deployment:
 2. fallback, when the declaration is absent: `deployment_model_name` →
    `DIALECT_MAP`/`ROUTE_MAP`, then the route-label sets from
    `callback_settings.reasoning_route_adapter` (`native_route_labels` default
-   `["deepseek"]`, `or_route_labels` default `["baidu/fp8"]`);
+   `["deepseek"]`, `or_route_labels` default `["baidu/fp8"]`; the reference
+   deployment overrides the latter to `["deepinfra/fp8"]`);
 3. neither → no-op.
 
-OR-bound (route label `baidu/fp8` / `deepinfra/fp8`):
+OR-bound (route label `deepinfra/fp8`; the default fallback set also accepts
+`baidu/fp8`):
 
 Default behavior (`reasoning_effort_requires_object` absent or `false`):
 

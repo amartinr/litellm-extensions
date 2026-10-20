@@ -45,8 +45,8 @@ PROMPT = "Which number is larger, 9.11 or 9.8? Reply in one word."
 # Per-request nonce so a gateway response cache cannot mask the adapter
 # (a cached body would return without the hook running).
 
-OR = "openrouter/deepseek-v4-flash"
-NATIVE = "deepseek/deepseek-v4-flash"
+OR = "openrouter/deepseek-flash"
+NATIVE = "deepseek/deepseek-flash"
 
 # leg id -> (model, extra body, expected reasoning)
 LEGS = [

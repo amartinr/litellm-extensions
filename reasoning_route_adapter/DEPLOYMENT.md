@@ -6,18 +6,19 @@ peak-hour fix depends on. It is specific to this reference deployment
 The gateway-side hook itself is generic; only this document is
 deployment-specific.
 
-Status: activation notes, 2026-09-09. The gateway adapter is implemented and
-offline-tested; the client delta and the gateway change land **together**.
+Status: activation notes, updated 2026-10-20. The gateway adapter is
+implemented and offline-tested; the client delta and the gateway change land
+**together**.
 
 ## Why a client-side change is needed
 
-The public alias `litellm/deepseek-v4-flash` is routed by `time_router` to
+The public alias `litellm/deepseek-flash` is routed by `time_router` to
 one of two upstreams with different reasoning dialects:
 
 | Route | Reasoning control it honors |
 |---|---|
 | native DeepSeek (off-peak) | `thinking:{type:enabled\|disabled}` + root `reasoning_effort` |
-| OpenRouter → Baidu (peak) | object `reasoning:{enabled,effort}`; root `reasoning_effort` |
+| OpenRouter → DeepInfra (peak) | object `reasoning:{enabled,effort}`; root `reasoning_effort` is rejected by the current model |
 
 Because the alias is fictitious and the route is chosen **per request from the
 clock**, the client cannot know a priori which dialect it is talking to. The
@@ -31,8 +32,10 @@ Without a client-side declaration, pi's `detectCompat` classifies the
 `litellm` provider (`baseUrl = gateway`, not `deepseek.com`) as generic
 OpenAI (`thinkingFormat: "openai"`). Then:
 
-- reasoning **ON** → root `reasoning_effort` (honored and cheap on both
-  routes);
+- reasoning **ON** → root `reasoning_effort`. Native honors it; on OR the
+  adapter translates it to the object when the deployment declares
+  `reasoning_effort_requires_object: true` (DeepInfra), or leaves it as the
+  root key on legacy OR deployments;
 - reasoning **OFF** → pi emits **nothing**, so no kill switch reaches the
   gateway and DeepSeek reasons by default — the user pays for reasoning they
   disabled (silent over-spend on both routes).
@@ -46,7 +49,7 @@ openai-completions`, `compat` only `supportsDeveloperRole:false` +
 `supportsReasoningEffort:true`).
 
 Required `compat` delta on every DeepSeek-backed entry (including the
-`litellm/deepseek-v4-flash` alias):
+`litellm/deepseek-flash` alias):
 
 ```jsonc
 "compat": {
@@ -63,12 +66,15 @@ Effects after the delta:
 - **OFF** → `thinking:{type:"disabled"}`: honored natively (off-peak) and
   rescued by the adapter to the OR OFF object (peak, 0 tokens).
 - **ON** → `thinking:{type:"enabled"}` is added next to the root
-  `reasoning_effort` (the documented native curl form); behavior is
-  byte-equivalent on both routes (the adapter drops the redundant `thinking`
-  on OR and keeps the cheap root effort).
+  `reasoning_effort` (the documented native curl form). Native honors both.
+  On OR, a deployment with `reasoning_effort_requires_object: true`
+  (DeepInfra) translates the effort into `reasoning:{enabled:true, effort}`;
+  a legacy OR deployment without the flag keeps the root effort.
 - `max_tokens` replaces `max_completion_tokens` (the field DeepSeek
   documents).
-- Tool scope: pi core forces `reasoning_content` (`""`).
+- Tool scope: pi core forces `reasoning_content` (`""`); the extension
+  upgrades it to `" "` so LiteLLM does not inject its own placeholder and
+  warn.
 
 Constraint: `thinkingLevelMap.off` must **not** be `null`, or pi will not emit
 the kill switch even with `thinkingFormat:"deepseek"`. Leaving the key absent
@@ -89,9 +95,27 @@ real reasoning text chained across those turns.
   `~/.pi/agent/extensions/pi-deepseek-reasoning-chain-fix/config.json`
   (exact or case-insensitive prefix match).
 
-The alias `litellm/deepseek-v4-flash` must be covered by that scope
-(either listed explicitly or via a `"deepseek/"` prefix). Role after the
-`compat` delta:
+The alias `litellm/deepseek-flash` must be covered by that scope
+(either listed explicitly or via a `"deepseek/"` prefix). With the current
+model ids the extension config must include:
+
+```json
+{
+  "models": [
+    "litellm/deepseek-flash",
+    "deepseek/deepseek-flash",
+    "deepseek/deepseek-v4-pro"
+  ],
+  "replayReasoning": true
+}
+```
+
+Stale ids (`litellm/deepseek-v4-flash`, `deepseek/deepseek-v4-flash`) make the
+extension inert for the Flash models. Pi core then sends
+`reasoning_content: ""`, which LiteLLM treats as missing and replaces with
+`" "`, emitting the warning described in §4.
+
+Role after the `compat` delta:
 
 - wire-compliance refinement (`" "` placeholder vs pi core's `""`), and
 - signature restore for resumed/persisted sessions (pi core replays real text
@@ -120,9 +144,10 @@ Coupling summary:
   fix); reasoning ON byte-equivalent; `reasoning_content: ""` vs LiteLLM's
   `" "` placeholder — same blank-chain class.
 - **Peak** (alias → OR): reasoning ON → the adapter drops the redundant
-  `thinking` and keeps root `reasoning_effort` (cheap on OR) —
-  byte-equivalent outcome; reasoning OFF → `kill_switch_rescue` to the OR
-  OFF object — 0 tokens (was 47–57 and billed).
+  `thinking`; the root effort is translated into the OR object (DeepInfra,
+  `reasoning_effort_requires_object: true`) or passed through on legacy OR
+  deployments. Reasoning OFF → `kill_switch_rescue` to the OR OFF object —
+  0 tokens (historical Baidu measurement: was 47–57 and billed).
 
 > If the bound OpenRouter model rejects the raw root `reasoning_effort`
 > (LiteLLM's provider map lags the model id), set
@@ -131,11 +156,41 @@ Coupling summary:
 > `reasoning` object instead. Leave it unset/false for routes that accept the
 > root key.
 
-> Effort **level** caveat (measured 2026-09-12, LiteLLM v1.99.0): the level
-> is not usable through the gateway. On native, LiteLLM discards it
-> ([litellm #27439]); on OR it is forwarded but the provider honours it
-> erratically. Only the ON/OFF kill switch is reliable. See `DESIGN.md` §1.4
-> and `PLAN.md`.
+> Effort **level** caveat (historical measurement 2026-09-12 on the former
+> Baidu route, LiteLLM v1.99.0): on native, LiteLLM discards the level
+> ([litellm #27439]); on OR the provider honoured it erratically. The current
+> DeepInfra route shows ordered low/high/max in the 2026-10-20 live checks,
+> but do not generalize that to other pinned providers. Treat only the ON/OFF
+> kill switch as portable. See `DESIGN.md` §1.4 and `PLAN.md`.
+
+## 4. Troubleshooting — LiteLLM `reasoning_content` warning
+
+LiteLLM emits this warning on the native DeepSeek route when thinking mode is
+active and an assistant message has no non-empty `reasoning_content`:
+
+```text
+DeepSeek thinking mode: assistant message is missing `reasoning_content`
+and none was saved in `provider_specific_fields`. A single-space placeholder
+is being injected...
+```
+
+It is not a 4xx: LiteLLM injects `" "` to satisfy the API. It does mean the
+model receives a blank reasoning chain for that turn, which can degrade
+multi-turn and tool-calling quality.
+
+Causes and checks:
+
+1. The extension scope does not list the current model ids (see §2). This is
+   the most common cause after a model rename.
+2. The client sends `reasoning_content: ""`; LiteLLM treats an empty string
+   as missing. The extension upgrades it to `" "` in tool scope.
+3. The conversation has no `tools` and no assistant `tool_calls`, so the
+   extension's tool-scope check does not fire. Pi core can still send `""`.
+4. A persisted/resumed session lost the real reasoning text. The extension
+   restores the `reasoning_content` signature where possible.
+
+Fix the client history; do not silence the warning at the gateway. The
+`reasoning_route_adapter` never rewrites `messages` (DESIGN §3).
 
 ## References
 

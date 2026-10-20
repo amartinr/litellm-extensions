@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Probe 1 — reasoning-format contract monitor, LiteLLM -> OpenRouter -> Baidu.
+"""Probe 1 — reasoning-format contract monitor, LiteLLM -> OpenRouter -> DeepInfra.
 
-Contract under test (deepseek/deepseek-v4-flash-0731 via OpenRouter)
+Contract under test (deepseek/deepseek-v4.1-flash-1017 via OpenRouter)
 --------------------------------------------------------------------
 OR exposes per-model reasoning metadata in GET /api/v1/models (queried
-2026-09-08, no key needed):
+2026-10-20 for deepseek-v4.1-flash-1017, no key needed):
 
     "reasoning": {
       "mandatory": false,
       "default_enabled": true,
-      "supported_efforts": ["max", "high", "low"],
+      "supported_efforts": ["max", "high", "low", "none"],
       "default_effort": "high"
     }
 
@@ -17,14 +17,15 @@ Payload rule (user directive): always send explicit key names and values;
 never rely on inference. The reasoning control is the OR object with BOTH
 keys, "enabled" and "effort", even when redundant (effort "none" is sent
 alongside enabled false). No root-level spellings are used (root
-reasoning_effort and the thinking object were probed and removed on
-2026-09-08 — root reasoning_effort:"none" does not disable on this route,
-and thinking:{type:disabled} is ignored; see git history and README).
+reasoning_effort and the thinking object were probed and removed on the
+historical Baidu route on 2026-09-08 — root reasoning_effort:"none" does not
+disable there, and thinking:{type:disabled} is ignored; see git history and
+README).
 
-- supported_efforts == DeepSeek's native 3 levels (low/high/max). DeepSeek's
-  own docs collapse the wider OR vocabulary: medium->high, xhigh->high.
+- The current model exposes max/high/low/none. DeepSeek's own docs collapse
+  the wider vocabulary: medium->high, xhigh->high, minimal->low.
 - History/root spellings ruled out on 2026-09-08 (see README, Results):
-  thinking:{type:disabled} is ignored on this route; root
+  thinking:{type:disabled} was ignored on the historical route; root
   reasoning_effort:"none" does not disable. The reasoning object with
   explicit keys (enabled + effort) is the only control used.
 
@@ -37,10 +38,10 @@ Constraints
   without it. Never hardcoded.
 - Reasoning-on legs use effort "low" (credit budget). LITELLM_EFFORT
   overrides. Off legs cost ~nothing.
-- One provider per run. Default target model: openrouter/deepseek-v4-flash
-  (LiteLLM alias -> OR deepseek-v4-flash-0731 -> Baidu fp8, provider.order
-  ["baidu/fp8"], no fallbacks). Native comparison:
-  LITELLM_MODEL=deepseek/deepseek-v4-flash (same contract probe on the
+- One provider per run. Default target model: openrouter/deepseek-flash
+  (LiteLLM alias -> OR deepseek-v4.1-flash-1017 -> DeepInfra fp8, provider.order
+  ["deepinfra/fp8"], no fallbacks). Native comparison:
+  LITELLM_MODEL=deepseek/deepseek-flash (same contract probe on the
   direct-API route).
 - No cross-provider histories: every request is single-turn and standalone.
 
@@ -49,7 +50,7 @@ Usage
     .venv/bin/python reasoning_route_adapter/probes/reasoning_format_tolerance.py [leg ...]
     # default = all legs (3 requests); pass leg ids for a subset:
     .venv/bin/python reasoning_route_adapter/probes/reasoning_format_tolerance.py off
-    LITELLM_MODEL=deepseek/deepseek-v4-flash .venv/bin/python reasoning_route_adapter/probes/....py
+    LITELLM_MODEL=deepseek/deepseek-flash .venv/bin/python reasoning_route_adapter/probes/....py
 
 Cost
 ----
@@ -65,8 +66,8 @@ import urllib.error
 import urllib.request
 
 BASE = os.environ.get("LITELLM_BASE", "http://litellm.private")
-MODEL = os.environ.get("LITELLM_MODEL", "openrouter/deepseek-v4-flash")
-EFFORT = os.environ.get("LITELLM_EFFORT", "low")  # always low for Baidu
+MODEL = os.environ.get("LITELLM_MODEL", "openrouter/deepseek-flash")
+EFFORT = os.environ.get("LITELLM_EFFORT", "low")  # always low for DeepInfra
 MAX_TOKENS = 256
 
 # One short prompt that reliably triggers (cheap) chain-of-thought.

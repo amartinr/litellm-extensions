@@ -5,7 +5,7 @@ author: A. Martin
 author_url: https://github.com/amartinr
 description: >
     LiteLLM custom pre-call hook (CustomLogger) for the alias
-    `litellm/deepseek-v4-flash`. (1) Time-based routing: reroutes the alias
+    `litellm/deepseek-flash`. (1) Time-based routing: reroutes the alias
     between the two deployments declared in its
     `model_info.metadata.time_router.reroute` (peak_target / offpeak_target);
     the peak schedule is the provider fact declared as `peak_windows` on the

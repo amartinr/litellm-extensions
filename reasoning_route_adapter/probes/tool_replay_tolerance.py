@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Probe 2 — tool-call continuation replay trio, OR->Baidu vs native.
+"""Probe 2 — tool-call continuation replay trio, OR->DeepInfra vs native.
 
 Purpose
 -------
@@ -10,7 +10,7 @@ continues its chain after tool results. On raw DeepSeek a missing field is
 HTTP 400; through this gateway the native route injects a placeholder +
 warning. The clients in front of this gateway replay the real reasoning
 text, a " " placeholder, or nothing (Open WebUI rebuild). This probe
-measures, on the OpenRouter->Baidu route, whether the field is required
+measures, on the OpenRouter->DeepInfra route, whether the field is required
 (4xx tolerance) and whether replay quality changes continuation reasoning.
 
 Design (v2)
@@ -27,9 +27,10 @@ must compute "tomorrow" from the get_date result and call get_weather:
     reasoning_content): model reasons again, computes tomorrow, calls
     get_weather, answers.
 
-Established so far on this route (2026-09-08): missing reasoning_content is
-tolerated (no 4xx — OR does not enforce DeepSeek's presence validation) and
-real-text replay gives the richest continuation reasoning.
+Established on the former Baidu route (2026-09-08): missing reasoning_content
+was tolerated (no 4xx — OR does not enforce DeepSeek's presence validation)
+and real-text replay gave the richest continuation reasoning. The current
+DeepInfra route re-checks the same behavior.
 
 Constraints
 -----------
@@ -38,15 +39,15 @@ Constraints
 - Reasoning exercised at effort "low" (credit budget); LITELLM_EFFORT
   override for a deliberate comparison run.
 - One provider per run: every call in a round uses the same model. Default =
-  openrouter/deepseek-v4-flash (OR -> Baidu fp8). Native comparison:
-  LITELLM_MODEL=deepseek/deepseek-v4-flash. No cross-provider histories.
+  openrouter/deepseek-flash (OR -> DeepInfra fp8). Native comparison:
+  LITELLM_MODEL=deepseek/deepseek-flash. No cross-provider histories.
 - rounds default 2 (each clean round = 1 tool-call request + 3 continuation
   requests = 4 requests); pass a number as argv[1] to change.
 
 Usage
 -----
     .venv/bin/python reasoning_route_adapter/probes/tool_replay_tolerance.py [rounds=2]
-    LITELLM_MODEL=deepseek/deepseek-v4-flash .venv/bin/python reasoning_route_adapter/probes/tool_replay_tolerance.py [rounds=2]
+    LITELLM_MODEL=deepseek/deepseek-flash .venv/bin/python reasoning_route_adapter/probes/tool_replay_tolerance.py [rounds=2]
 
 Cost
 ----
@@ -62,8 +63,8 @@ import urllib.error
 import urllib.request
 
 BASE = os.environ.get("LITELLM_BASE", "http://litellm.private")
-MODEL = os.environ.get("LITELLM_MODEL", "openrouter/deepseek-v4-flash")
-EFFORT = os.environ.get("LITELLM_EFFORT", "low")  # always low for Baidu
+MODEL = os.environ.get("LITELLM_MODEL", "openrouter/deepseek-flash")
+EFFORT = os.environ.get("LITELLM_EFFORT", "low")  # always low for DeepInfra
 MAX_TOKENS = 256
 
 TOOLS = [
@@ -319,7 +320,7 @@ def main():
     b = agg["B_missing"]
     if b["format_err"]:
         print("  => B_missing (no reasoning_content) is FORMAT-REJECTED on "
-              "this route (HTTP 4xx) — OpenRouter->Baidu enforces the "
+              "this route (HTTP 4xx) — OpenRouter->DeepInfra enforces the "
               "DeepSeek presence contract.")
     elif b["ok"]:
         print("  => missing reasoning_content is TOLERATED on this route "

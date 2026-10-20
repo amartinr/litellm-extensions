@@ -9,7 +9,13 @@ normalizes reasoning through its own interface. These probes verify, against
 the live endpoint, that requests conform to the OR contract for DeepSeek and
 monitor for drift.
 
-## Contract under test (deepseek/deepseek-v4-flash-0731 via OR)
+Current reference deployment: OR target `openrouter/deepseek-flash` (upstream
+`deepseek/deepseek-v4.1-flash-1017` → DeepInfra fp8) and native target
+`deepseek/deepseek-flash`. The recorded results from 2026-09-08/12 were taken
+on the former Baidu/streamlake route and are kept below as historical evidence;
+they do not automatically apply to DeepInfra.
+
+## Contract under test (deepseek/deepseek-v4.1-flash-1017 via OR)
 
 OR exposes per-model reasoning metadata in `GET /api/v1/models` (public, no
 key):
@@ -18,7 +24,7 @@ key):
 "reasoning": {
   "mandatory": false,
   "default_enabled": true,
-  "supported_efforts": ["max", "high", "low"],
+  "supported_efforts": ["max", "high", "low", "none"],
   "default_effort": "high"
 }
 ```
@@ -29,41 +35,43 @@ with BOTH keys — `enabled` and `effort` — even when redundant
 (`{"enabled": false, "effort": "none"}` for OFF). Root-level spellings are
 not used.
 
-Rationale for the payload rule (findings of 2026-09-08, probed before the
-rule was set; see git history):
+Rationale for the payload rule (historical findings of 2026-09-08 on the
+former Baidu route, probed before the rule was set; see git history):
 
 - `thinking` is not part of the OR API and is ignored on this route — the
   DeepSeek-native kill-switch `thinking:{type:disabled}` does not disable
   reasoning (still reasoned in two runs, confirmed after a gateway restart).
-- Root `reasoning_effort:"none"` does not disable on this route (2 runs,
-  still reasoned 53-55 tokens); "none" is not in the model's supported set
-  nor in OpenAI's own `reasoning_effort` vocabulary.
+- Root `reasoning_effort:"none"` did not disable on that historical route
+  (2 runs, still reasoned 53-55 tokens); "none" was not in that model's
+  supported set nor in OpenAI's own `reasoning_effort` vocabulary.
 - Object-spelling cost: `reasoning:{effort:"low"}` and
   `reasoning:{enabled:true, effort:"low"}` both spent the full 256-token
   budget on a reasoning-trap prompt (`finish: length`) while root
   `reasoning_effort:"low"` was modest — the burn is a property of the object
   spelling on this provider, not of omitted keys.
-- `supported_efforts` == DeepSeek's native 3 levels (low/high/max); OR
-  exposes no extra levels for this model. DeepSeek's own docs collapse the
-  wider vocabulary: `medium`→`high`, `xhigh`→`high`.
+- On that historical model, `supported_efforts` matched DeepSeek's native 3
+  levels (low/high/max). The current `deepseek-v4.1-flash-1017` metadata adds
+  `"none"`; DeepSeek's docs still collapse `medium`→`high`, `xhigh`→`high`.
 - Tool-call histories: OR accepts `reasoning_content` on assistant messages
   as an alias for its `reasoning` field (docs, best-practices/
-  reasoning-tokens); missing field is tolerated here (no 4xx) and real-text
-  replay gives the richest continuation reasoning.
+  reasoning-tokens); missing field was tolerated on the historical route (no
+  4xx) and real-text replay gave the richest continuation reasoning. Re-run
+  probe 2 against DeepInfra before relying on the same token counts.
 
 ## Rules
 
 1. **No hardcoded API key.** Key comes from `LITELLM_KEY` or
    `LITELLM_MASTER_KEY` (repo `.env.example` name) — the scripts refuse to run
    without it.
-2. **Reasoning on Baidu is always exercised at effort `low`** (credit budget).
-   Override only for a native-DeepSeek comparison run: `LITELLM_EFFORT=...`.
+2. **Reasoning on DeepInfra is always exercised at effort `low`** (credit
+   budget). Override only for a native-DeepSeek comparison run:
+   `LITELLM_EFFORT=...`.
 3. **No cross-provider histories.** Every test starts and ends with ONE
-   provider. Default target: the `openrouter/deepseek-v4-flash` deployment
-   (OR `deepseek-v4-flash-0731` → Baidu fp8, `provider.order: ["baidu/fp8"]`,
-   no fallbacks). It is called directly, not through the alias, so
-   `time_router` is bypassed. The native route
-   (`deepseek/deepseek-v4-flash`, direct API) is a comparison baseline only,
+   provider. Default target: the `openrouter/deepseek-flash` deployment
+   (OR `deepseek/deepseek-v4.1-flash-1017` → DeepInfra fp8, `provider.order:
+   ["deepinfra/fp8"]`, no fallbacks). It is called directly, not through the
+   alias, so `time_router` is bypassed. The native route
+   (`deepseek/deepseek-flash`, direct API) is a comparison baseline only,
    via `LITELLM_MODEL`; a comparison run still uses a single provider.
 4. **Small, precise probes.** Short prompts, `max_tokens` capped (256), no
    streaming. Full default run (probes 1, 2, 3) = 13 requests, well under one
@@ -88,9 +96,9 @@ expectation; `UNEXPECTED` means the endpoint drifted from it.
 | `off` | `reasoning:{enabled:false, effort:"none"}` | no | contract form, OFF (both keys sent) |
 
 ```bash
-.venv/bin/python reasoning_route_adapter/probes/reasoning_format_tolerance.py            # OR → Baidu
+.venv/bin/python reasoning_route_adapter/probes/reasoning_format_tolerance.py            # OR → DeepInfra
 # comparison baseline (same legs, native route, single provider):
-LITELLM_MODEL=deepseek/deepseek-v4-flash .venv/bin/python reasoning_route_adapter/probes/reasoning_format_tolerance.py
+LITELLM_MODEL=deepseek/deepseek-flash .venv/bin/python reasoning_route_adapter/probes/reasoning_format_tolerance.py
 # rerun only some legs (economize):
 .venv/bin/python reasoning_route_adapter/probes/reasoning_format_tolerance.py off
 ```
@@ -113,8 +121,8 @@ with backoff and reported separately — they are provider availability issues,
 not format verdicts.
 
 ```bash
-.venv/bin/python reasoning_route_adapter/probes/tool_replay_tolerance.py [rounds=2]                 # OR → Baidu
-LITELLM_MODEL=deepseek/deepseek-v4-flash .venv/bin/python reasoning_route_adapter/probes/tool_replay_tolerance.py [rounds=2]
+.venv/bin/python reasoning_route_adapter/probes/tool_replay_tolerance.py [rounds=2]                 # OR → DeepInfra
+LITELLM_MODEL=deepseek/deepseek-flash .venv/bin/python reasoning_route_adapter/probes/tool_replay_tolerance.py [rounds=2]
 ```
 
 ## Probe 3 — `reasoning_response_field.py`
@@ -127,8 +135,8 @@ under `reasoning_content`. Two legs per run - `nostream` (message fields)
 and `stream` (delta fields, what pi actually parses):
 
 ```bash
-.venv/bin/python reasoning_route_adapter/probes/reasoning_response_field.py            # OR → Baidu
-LITELLM_MODEL=deepseek/deepseek-v4-flash .venv/bin/python reasoning_route_adapter/probes/reasoning_response_field.py
+.venv/bin/python reasoning_route_adapter/probes/reasoning_response_field.py            # OR → DeepInfra
+LITELLM_MODEL=deepseek/deepseek-flash .venv/bin/python reasoning_route_adapter/probes/reasoning_response_field.py
 ```
 
 `UNEXPECTED` = the canonical OR `reasoning` field carries the reasoning
@@ -137,7 +145,7 @@ that would change pi's stored signature and make it replay the wrong field
 on the next request (native tolerates the stray field without a 4xx but
 drops its content).
 
-## Results (2026-09-08, target: OpenRouter → Baidu fp8)
+## Results (2026-09-08, target: OpenRouter → Baidu fp8 — historical)
 
 ### Probe 1 — contract-form matrix (explicit keys)
 
@@ -244,10 +252,10 @@ cache:
 
 | leg | model | body | expected |
 |---|---|---|---|
-| `or_off` | `openrouter/deepseek-v4-flash` | `thinking:{type:disabled}` | 0 reasoning tokens (rescued) |
-| `or_default` | `openrouter/deepseek-v4-flash` | *(none)* | reasons |
-| `native_off` | `deepseek/deepseek-v4-flash` | `thinking:{type:disabled}` | 0 reasoning tokens (native honors) |
-| `native_default` | `deepseek/deepseek-v4-flash` | *(none)* | reasons |
+| `or_off` | `openrouter/deepseek-flash` | `thinking:{type:disabled}` | 0 reasoning tokens (rescued) |
+| `or_default` | `openrouter/deepseek-flash` | *(none)* | reasons |
+| `native_off` | `deepseek/deepseek-flash` | `thinking:{type:disabled}` | 0 reasoning tokens (native honors) |
+| `native_default` | `deepseek/deepseek-flash` | *(none)* | reasons |
 
 The `or_off` leg also proves the bound deployment's `model_info.metadata` /
 `deployment_model_name` reaches the hook (DESIGN §4.2/§4.3): if classification

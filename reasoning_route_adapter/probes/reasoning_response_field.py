@@ -7,11 +7,11 @@ Pi's serializer replays stored reasoning under the field name recorded at
 stream time (its thinkingSignature). For the replay to stay in the native
 field — `reasoning_content`, the one the native route requires and OR
 accepts as an alias — the response must deliver the reasoning under
-`reasoning_content`. Measured 2026-09-09: this route (OR -> Baidu fp8 via
-the gateway) streams reasoning under `reasoning_content`, with no canonical
-OR `reasoning` field, so pi stores the native signature after OR-served
-turns and the reasoning_route_adapter's message handling stays moot on the
-OR route. This probe watches for drift: if the gateway/OR start delivering
+`reasoning_content`. Historical measurement (2026-09-09, OR -> Baidu fp8)
+showed the route delivering reasoning under `reasoning_content`, with no
+canonical OR `reasoning` field, so pi stored the native signature after
+OR-served turns. The current route is DeepInfra fp8; this probe re-checks
+the same contract. It watches for drift: if the gateway/OR start delivering
 the reasoning under the canonical `reasoning` field instead, pi would store
 a `reasoning` signature and replay under the wrong field on the next
 request — native tolerates the stray field without a 4xx but drops its
@@ -27,9 +27,9 @@ Constraints
 -----------
 - API key from env only (LITELLM_KEY or LITELLM_MASTER_KEY); never hardcoded.
 - Reasoning at effort low (credit budget). LITELLM_EFFORT overrides.
-- One provider per run. Default target: openrouter/deepseek-v4-flash
-  (LiteLLM alias -> OR deepseek-v4-flash-0731 -> Baidu fp8). Native
-  baseline: LITELLM_MODEL=deepseek/deepseek-v4-flash (native also delivers
+- One provider per run. Default target: openrouter/deepseek-flash
+  (LiteLLM alias -> OR deepseek-v4.1-flash-1017 -> DeepInfra fp8). Native
+  baseline: LITELLM_MODEL=deepseek/deepseek-flash (native also delivers
   reasoning_content).
 - Two legs per run: `nostream` (message fields) and `stream` (delta fields,
   what pi actually parses). Cost: 2 short requests, effort low => well
@@ -50,7 +50,7 @@ import urllib.error
 import urllib.request
 
 BASE = os.environ.get("LITELLM_BASE", "http://litellm.private")
-MODEL = os.environ.get("LITELLM_MODEL", "openrouter/deepseek-v4-flash")
+MODEL = os.environ.get("LITELLM_MODEL", "openrouter/deepseek-flash")
 EFFORT = os.environ.get("LITELLM_EFFORT", "low")
 MAX_TOKENS = 256
 PROMPT = "Which number is larger, 9.11 or 9.8? Reply in one word."
